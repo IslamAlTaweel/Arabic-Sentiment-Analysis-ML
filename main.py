@@ -95,6 +95,9 @@ data = []
 nltk.download('stopwords')
 arabic_stopwords = set(stopwords.words('arabic'))
 
+
+
+
 def main():
     df = convert_to_csv_file()
     if df is None:
@@ -118,6 +121,8 @@ def main():
     # save preprocessed CSV
     df.to_csv(f"{file_name}_preprocessed.csv", index=False, encoding="utf-8-sig")
     print(f"\nPreprocessed data saved to '{file_name}_preprocessed.csv'")
+
+
 
 
 def convert_to_csv_file():
@@ -154,6 +159,8 @@ def convert_to_csv_file():
         print(f"Error: The file '{file_name}' was not found. Please ensure it exists in the same directory as the Arabic Sentiment Analysis script.")
 
 
+
+
 def data_analysis(df):
 
     print(df.shape)
@@ -169,12 +176,13 @@ def data_analysis(df):
 
 
 
+
 # Function to clean each tweet
 def clean_text(text):
     # Perform lowercase, remove URLs, HTML, numbers, punctuation, and extra spaces.
     text = str(text)
     # make lowercase
-    text = text.lower()
+    text = normalize_arabic(text)
     # Remove URLs
     text = re.sub(r"http\S+|www\S+|https\S+", "", text)
     # Remove HTML tags
@@ -189,11 +197,26 @@ def clean_text(text):
 
 
 
+
+def normalize_arabic(text):
+    text = text.replace("أ", "ا")
+    text = text.replace("إ", "ا")
+    text = text.replace("آ", "ا")
+    text = text.replace("ى", "ي")
+    text = text.replace("ة", "ه")
+    text = text.replace("ؤ", "و")
+    text = text.replace("ئ", "ي")
+    return text
+
+
+
+
 def remove_stopwords(text):
     # Remove common Arabic stopwords.
-    words = text.split()
-    words = [w for w in words if w not in arabic_stopwords]
+    words = text.split()                # Split sentence into a list of words
+    words = [w for w in words if w not in arabic_stopwords] # keep w in words only if it isnt a stopword
     return " ".join(words)
+
 
 
 
@@ -203,6 +226,7 @@ def preprocess_text(text):
     # Stopword removal
     text = remove_stopwords(text)
     return text
+
 
 
 
