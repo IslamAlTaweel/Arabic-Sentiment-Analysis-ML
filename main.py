@@ -100,7 +100,11 @@ def main():
     if df is None:
         return
 
+    # Show first 5 rows fully (no truncation)
+    pd.set_option("display.max_colwidth", None)  # Don't truncate text
+
     print("=== BEFORE CLEANING ===")
+    print(df[["text", "label"]].head())
     data_analysis(df)
 
 
@@ -108,6 +112,7 @@ def main():
     df["cleaned_text"] = df["text"].apply(preprocess_text)
 
     print("\n=== AFTER CLEANING ===")
+    print(df[["cleaned_text", "label"]].head())
     data_analysis(df)
 
     # save preprocessed CSV
@@ -150,12 +155,7 @@ def convert_to_csv_file():
 
 
 def data_analysis(df):
-    # Show first 5 rows fully (no truncation)
-    pd.set_option("display.max_colwidth", None)  # don't truncate text
 
-    # Check results
-    # Print the first 5 rows to check that everything looks correct
-    print(df.head())
     print(df.shape)
     # Print the number of samples per sentiment label (class distribution)
     print(df["label"].value_counts())
