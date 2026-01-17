@@ -78,6 +78,9 @@ METHODOLOGIES
 
 import pandas as pd
 import matplotlib.pyplot as plt # Import pandas library for data manipulation
+import re
+import nltk
+from nltk.corpus import stopwords
 
 # Name of the input file consisting of the tweets in arabic
 file_name = "Arabic.txt"
@@ -88,8 +91,28 @@ labels = {"POS", "NEG", "OBJ", "NEUTRAL"}
 # Create an empty list to store processed data
 data = []
 
+# Arabic stopwords from NLTK
+nltk.download('stopwords')
+arabic_stopwords = set(stopwords.words('arabic'))
+
 def main():
-    data_analysis()
+    df = convert_to_csv_file()
+    if df is None:
+        return
+
+    print("=== BEFORE CLEANING ===")
+    data_analysis(df)
+
+
+    # Apply preprocessing
+    df["cleaned_text"] = df["text"].apply(preprocess_text)
+
+    print("\n=== AFTER CLEANING ===")
+    data_analysis(df)
+
+    # save preprocessed CSV
+    df.to_csv(f"{file_name}_preprocessed.csv", index=False, encoding="utf-8-sig")
+    print(f"\nPreprocessed data saved to '{file_name}_preprocessed.csv'")
 
 
 def convert_to_csv_file():
@@ -120,26 +143,67 @@ def convert_to_csv_file():
         # utf-8-sig ensures Arabic characters are properly saved and can be opened in Excel
         df.to_csv(f"{file_name}.csv", index=False, encoding="utf-8-sig")
 
+        return df
     # in case the input file doesn't exist or error arrises
     except FileNotFoundError:
         print(f"Error: The file '{file_name}' was not found. Please ensure it exists in the same directory as the Arabic Sentiment Analysis script.")
 
 
-def data_analysis():
-    convert_to_csv_file()
-    df = pd.read_csv(f"{file_name}.csv")
+def data_analysis(df):
+    # Show first 5 rows fully (no truncation)
+    pd.set_option("display.max_colwidth", None)  # don't truncate text
 
+    # Check results
     # Print the first 5 rows to check that everything looks correct
     print(df.head())
     print(df.shape)
     # Print the number of samples per sentiment label (class distribution)
     print(df["label"].value_counts())
 
+    # Plot class distribution
     df["label"].value_counts().plot(kind="bar")
     plt.title("Sentiment Class Distribution")
     plt.xlabel("Sentiment Class")
     plt.ylabel("Count")
     plt.show()
+
+
+
+# Function to clean each tweet
+def clean_text(text):
+    # Perform lowercase, remove URLs, HTML, numbers, punctuation, and extra spaces.
+    text = str(text)
+    # make lowercase
+    text = text.lower()
+    # Remove URLs
+    text = re.sub(r"http\S+|www\S+|https\S+", "", text)
+    # Remove HTML tags
+    text = re.sub(r"<.*?>", "", text)
+    # Remove numbers
+    text = re.sub(r"\d+", "", text)
+    # Remove punctuation and special characters (keep Arabic letters)
+    text = re.sub(r"[^\u0600-\u06FF\s]", "", text)
+    # Remove extra spaces
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+
+def remove_stopwords(text):
+    # Remove common Arabic stopwords.
+    words = text.split()
+    words = [w for w in words if w not in arabic_stopwords]
+    return " ".join(words)
+
+
+
+def preprocess_text(text):
+    # Apply basic cleaning
+    text = clean_text(text)
+    # Stopword removal
+    text = remove_stopwords(text)
+    return text
+
 
 
 if __name__ == "__main__":
