@@ -195,6 +195,9 @@ def clean_text(text):
     text = re.sub(r"[^\u0600-\u06FF\s]", "", text)
     # Remove extra spaces
     text = re.sub(r"\s+", " ", text).strip()
+
+    # Remove repeating chars while safely keeping two to emphasize emotion
+    text = re.sub(r'(.)\1{2,}', r'\1\1', text)
     return text
 
 
@@ -209,6 +212,7 @@ def normalize_arabic(text):
     text = text.replace("ؤ", "و")
     text = text.replace("ئ", "ي")
     return text
+
 
 
 
@@ -236,6 +240,7 @@ def preprocess_text(text):
     # Stopword removal
     text = remove_stopwords(text)
     text = stem_text(text)
+
     return text
 
 
