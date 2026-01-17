@@ -81,6 +81,7 @@ import matplotlib.pyplot as plt # Import pandas library for data manipulation
 import re
 import nltk
 from nltk.corpus import stopwords
+from nltk.stem.isri import ISRIStemmer
 
 # Name of the input file consisting of the tweets in arabic
 file_name = "Arabic.txt"
@@ -94,6 +95,7 @@ data = []
 # Arabic stopwords from NLTK
 nltk.download('stopwords')
 arabic_stopwords = set(stopwords.words('arabic'))
+stemmer = ISRIStemmer()
 
 
 
@@ -220,11 +222,20 @@ def remove_stopwords(text):
 
 
 
+def stem_text(text):
+    words = text.split()
+    stemmed_words = [stemmer.stem(word) for word in words]
+    return " ".join(stemmed_words)
+
+
+
+
 def preprocess_text(text):
     # Apply basic cleaning
     text = clean_text(text)
     # Stopword removal
     text = remove_stopwords(text)
+    text = stem_text(text)
     return text
 
 
