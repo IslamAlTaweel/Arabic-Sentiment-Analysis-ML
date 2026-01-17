@@ -77,43 +77,70 @@ METHODOLOGIES
 			"""
 
 import pandas as pd
+import matplotlib.pyplot as plt # Import pandas library for data manipulation
 
 # Name of the input file consisting of the tweets in arabic
 file_name = "Arabic.txt"
 
+# Define the set of valid sentiment labels
 labels = {"POS", "NEG", "OBJ", "NEUTRAL"}
+
+# Create an empty list to store processed data
 data = []
 
 def main():
-    convert_to_csv_file()
+    data_analysis()
 
 
 def convert_to_csv_file():
     # ensure that the input file exists and was found by the program
     try:
+        # Open the text file in UTF-8 encoding
         with open(file_name, "r", encoding="utf-8") as file:
             for line in file:
-                line = line.strip()
+                line = line.strip() # Remove leading/trailing spaces and newline characters
                 if not line:
-                    continue
+                    continue        # Skip empty lines
 
-                # split into text and label
+                # split the line from the right on the last tab character to separate text and label
                 parts = line.rsplit("\t", 1)
 
-                # Last token must be a label
+                # Check if the split produced exactly two parts and the label is valid
                 if len(parts) == 2 and parts[1] in labels:
-                    text, label = parts
-                    data.append([text, label])
+                    text, label = parts         # Assign text and label
+                    data.append([text, label])  # Add them to our data list
                 else:
                     # skip malformed lines safely
                     print("Skipped:", line)
 
+        # Convert the list of lists into a pandas DataFrame with columns "text" and "label"
         df = pd.DataFrame(data, columns=["text", "label"])
+
+        # Save the structured DataFrame to a CSV file
+        # utf-8-sig ensures Arabic characters are properly saved and can be opened in Excel
         df.to_csv(f"{file_name}.csv", index=False, encoding="utf-8-sig")
 
     # in case the input file doesn't exist or error arrises
     except FileNotFoundError:
         print(f"Error: The file '{file_name}' was not found. Please ensure it exists in the same directory as the Arabic Sentiment Analysis script.")
+
+
+def data_analysis():
+    convert_to_csv_file()
+    df = pd.read_csv(f"{file_name}.csv")
+
+    # Print the first 5 rows to check that everything looks correct
+    print(df.head())
+    print(df.shape)
+    # Print the number of samples per sentiment label (class distribution)
+    print(df["label"].value_counts())
+
+    df["label"].value_counts().plot(kind="bar")
+    plt.title("Sentiment Class Distribution")
+    plt.xlabel("Sentiment Class")
+    plt.ylabel("Count")
+    plt.show()
+
 
 if __name__ == "__main__":
     main()
