@@ -186,13 +186,13 @@ def clean_text(text):
     # make lowercase
     text = normalize_arabic(text)
     # Remove URLs
-    text = re.sub(r"http\S+|www\S+|https\S+", "", text)
+    text = re.sub(r"http\S+|www\S+|https\S+", " ", text)
     # Remove HTML tags
-    text = re.sub(r"<.*?>", "", text)
+    text = re.sub(r"<.*?>", " ", text)
     # Remove numbers
-    text = re.sub(r"\d+", "", text)
+    text = re.sub(r"\d+", " ", text)
     # Remove punctuation and special characters (keep Arabic letters)
-    text = re.sub(r"[^\u0600-\u06FF\s]", "", text)
+    text = re.sub(r"[^\u0600-\u06FF\s]", " ", text)
     # Remove extra spaces
     text = re.sub(r"\s+", " ", text).strip()
 
@@ -204,15 +204,11 @@ def clean_text(text):
 
 
 def normalize_arabic(text):
-    text = text.replace("أ", "ا")
-    text = text.replace("إ", "ا")
-    text = text.replace("آ", "ا")
-    text = text.replace("ى", "ي")
-    text = text.replace("ة", "ه")
-    text = text.replace("ؤ", "و")
-    text = text.replace("ئ", "ي")
+    text = re.sub("[إأآا]", "ا", text)
+    text = re.sub("ي", "ى", text)
+    text = re.sub("ه", "ة", text)
+    text = re.sub("ك", "گ", text)
     return text
-
 
 
 
