@@ -82,12 +82,18 @@ import re
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem.isri import ISRIStemmer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import classification_report, confusion_matrix
 
 # Name of the input file consisting of the tweets in arabic
 file_name = "Arabic.txt"
 
-# Define the set of valid sentiment labels
-labels = {"POS", "NEG", "OBJ", "NEUTRAL"}
+# Define the set of valid sentiment LABELS
+LABELS = {"POS", "NEG", "OBJ", "NEUTRAL"}
 
 # Create an empty list to store processed data
 data = []
@@ -125,7 +131,28 @@ def main():
     print(f"\nPreprocessed data saved to '{file_name}_preprocessed.csv'")
 
 
+    tfidf_features, labels, vectorizer = extract_features(df)   # Generate TF–IDF vectors
 
+    handEngineered_features = extract_handEngineered_features(df)
+
+    final_features = combine_features(tfidf_features, handEngineered_features)
+
+    features_training, features_validation, features_testing, labels_training, labels_validation, labels_testing = split_dataset(final_features, labels)
+
+    print("Train size:", features_training.shape)
+    print("Validation size:", features_validation.shape)
+    print("Test size:", features_testing.shape)
+
+    print("TF-IDF shape:", tfidf_features.shape)
+    print("Handcrafted shape:", handEngineered_features.shape)
+    print("Final shape:", final_features.shape)
+
+    # --------------------------
+    # Train & evaluate models
+    # --------------------------
+    decisiontree_model, randomforest_model = train_and_evaluate_models(features_training, labels_training, features_validation, labels_validation)
+    evaluate_on_test_set(decisiontree_model, randomforest_model,
+                         features_testing, labels_testing)
 
 def convert_to_csv_file():
     # ensure that the input file exists and was found by the program
@@ -141,7 +168,7 @@ def convert_to_csv_file():
                 parts = line.rsplit("\t", 1)
 
                 # Check if the split produced exactly two parts and the label is valid
-                if len(parts) == 2 and parts[1] in labels:
+                if len(parts) == 2 and parts[1] in LABELS:
                     text, label = parts         # Assign text and label
                     data.append([text, label])  # Add them to our data list
                 else:
@@ -207,7 +234,7 @@ def normalize_arabic(text):
     text = re.sub("[إأآا]", "ا", text)
     text = re.sub("ي", "ى", text)
     text = re.sub("ه", "ة", text)
-    text = re.sub("ك", "گ", text)
+    text = re.sub("و", "ؤ", text)
     return text
 
 
@@ -240,6 +267,229 @@ def preprocess_text(text):
     return text
 
 
+
+# Feature Extraction:
+#   1. Automated Text Representations
+#       a. -TF-IDF: Counts how often words appear.
+#           It gives more importance to unique, meaningful words and less to common ones.
+def extract_features(df):
+    """
+    Converts cleaned Arabic text into numerical features using TF-IDF
+    and separates the sentiment labels.
+
+    Returns:
+    - text_features: numerical representation of text (for ML models)
+    - sentiment_labels: target classes (POS, NEG, OBJ, NEUTRAL)
+    - tfidf_vectorizer: the trained TF-IDF object (needed later for testing)
+    """
+
+    # Create a TF-IDF vectorizer
+    # ngram_range=(1,2) → uses single words (unigrams) and word pairs (bigrams)
+    # max_features=5000 → limits vocabulary size to most important 5000 features
+    tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 2),max_features=5000)
+
+    # Convert cleaned text into numerical feature vectors
+    # Each tweet becomes a row of numbers
+    text_features = tfidf_vectorizer.fit_transform(df["cleaned_text"])
+
+    # Extract the sentiment labels (targets)
+    sentiment_labels = df["label"]
+
+    return text_features, sentiment_labels, tfidf_vectorizer
+
+
+
+
+# Tweet length
+def tweet_length_feature(text):
+    return len(text.split())
+
+
+
+
+# Punctuation usage
+import string
+def punctuation_count(text):
+    count = 0
+    for char in text:
+        if char in string.punctuation:
+            count += 1
+    return count
+
+
+
+
+# character-based repetition  patterns
+def repetition_feature(text):
+    return len(re.findall(r'(.)\1+', text))
+
+
+# Hashtag Feature
+def hashtag_count(text):
+    return len(re.findall(r"#\w+", text))
+
+
+
+# Emoticon / Emoji Feature
+def emoji_count(text):
+    emoji_pattern = re.compile(
+        "["
+        u"\U0001F600-\U0001F64F"  # emoticons
+        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # flags
+        "]+", flags=re.UNICODE
+    )
+    return len(emoji_pattern.findall(text))
+
+
+
+
+# Combine handcrafted features
+def extract_handEngineered_features(df):
+    df["tweet_length"] = df["cleaned_text"].apply(tweet_length_feature)
+    df["punctuation_count"] = df["text"].apply(punctuation_count)  # uncleaned text
+    df["repetition_count"] = df["text"].apply(repetition_feature)  # uncleaned text
+    df["hashtag_count"] = df["text"].apply(hashtag_count)          # uncleaned text
+    df["emoji_count"] = df["text"].apply(emoji_count)              # uncleaned text
+
+    return df[[
+        "tweet_length",
+        "punctuation_count",
+        "repetition_count",
+        "hashtag_count",
+        "emoji_count"
+    ]]
+
+
+
+
+# Combine TF-IDF + handcrafted features
+from scipy.sparse import hstack
+
+def combine_features(tfidf_features, handcrafted_features):
+    return hstack([tfidf_features, handcrafted_features.values])
+
+
+
+
+# 60% of the dataset reserved for training
+# 20% of the dataset reserved for validation
+# 20% of the dataset reserved for testing
+def split_dataset(features, labels):
+
+    # First split: 60% training, 40% temp (later to be split into validation and testing)
+    features_training, features_temp, labels_training, labels_temp = train_test_split(features, labels,
+                                                                test_size=0.4, random_state=42, stratify=labels)
+
+    # Second split: 20% validation, 20% testing
+    features_validation, features_testing, labels_validation, labels_testing = train_test_split(features_temp, labels_temp,
+                                                                test_size=0.5, random_state=42, stratify=labels_temp)
+
+    return features_training, features_validation, features_testing, labels_training, labels_validation, labels_testing
+
+
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import classification_report, confusion_matrix
+def train_and_evaluate_models(features_training, labels_training, features_validation, labels_validation):
+    # --------------------------
+    # 1. Decision Tree
+    # --------------------------
+    decisiontree_parameters = {
+        "max_depth": [None, 10, 20, 30],
+        "min_samples_split": [2, 5, 10],
+        "class_weight": ["balanced"]  # handle class imbalance
+    }
+
+    decisiontree = DecisionTreeClassifier(random_state=42)
+    decisiontree_grid = GridSearchCV(decisiontree, decisiontree_parameters, cv=3, scoring='f1_macro', n_jobs=-1)
+    decisiontree_grid.fit(features_training, labels_training)
+
+    print("=== Decision Tree Best Parameters ===")
+    print(decisiontree_grid.best_params_)
+
+    decisiontree_predictions = decisiontree_grid.predict(features_validation)
+    print("\n--- Decision Tree Evaluation ---")
+    print(classification_report(labels_validation, decisiontree_predictions))
+    print("Confusion Matrix:\n", confusion_matrix(labels_validation, decisiontree_predictions))
+
+    # --------------------------
+    # 2. Random Forest
+    # --------------------------
+    randomforest_parameters = {
+        "n_estimators": [100, 200],
+        "max_depth": [None, 10, 20],
+        "min_samples_split": [2, 5],
+        "class_weight": ["balanced"]
+    }
+
+    randomforest = RandomForestClassifier(random_state=42)
+    randomforest_grid = GridSearchCV(randomforest, randomforest_parameters, cv=3, scoring='f1_macro', n_jobs=-1)
+    randomforest_grid.fit(features_training, labels_training)
+
+    print("\n=== Random Forest Best Parameters ===")
+    print(randomforest_grid.best_params_)
+
+    randomforest_predictions = randomforest_grid.predict(features_validation)
+    print("\n--- Random Forest Evaluation ---")
+    print(classification_report(labels_validation, randomforest_predictions))
+    print("Confusion Matrix:\n", confusion_matrix(labels_validation, randomforest_predictions))
+
+    # Return the trained models in case we need them later
+    return decisiontree_grid.best_estimator_, randomforest_grid.best_estimator_
+
+
+
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import seaborn as sns
+
+
+def evaluate_on_test_set(decision_tree_model, random_forest_model,
+                         features_testing, labels_testing):
+    """
+    Evaluates the trained models on the test set.
+    Prints accuracy, precision, recall, F1-score and displays confusion matrices.
+    """
+
+    models = {
+        "Decision Tree": decision_tree_model,
+        "Random Forest": random_forest_model
+    }
+
+    for name, model in models.items():
+        print(f"\n=== {name} Evaluation on Test Set ===")
+
+        # Make predictions
+        predictions = model.predict(features_testing)
+
+        # Compute metrics
+        acc = accuracy_score(labels_testing, predictions)
+        prec = precision_score(labels_testing, predictions, average='macro')
+        rec = recall_score(labels_testing, predictions, average='macro')
+        f1 = f1_score(labels_testing, predictions, average='macro')
+
+        print(f"Accuracy: {acc:.4f}")
+        print(f"Precision: {prec:.4f}")
+        print(f"Recall: {rec:.4f}")
+        print(f"F1-score: {f1:.4f}")
+
+        # Confusion matrix
+        cm = confusion_matrix(labels_testing, predictions, labels=["POS", "NEG", "OBJ", "NEUTRAL"])
+        print("Confusion Matrix:\n", cm)
+
+        # Plot the confusion matrix as heatmap
+        plt.figure(figsize=(6, 4))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=["POS", "NEG", "OBJ", "NEUTRAL"],
+                    yticklabels=["POS", "NEG", "OBJ", "NEUTRAL"])
+        plt.title(f"{name} Confusion Matrix")
+        plt.xlabel("Predicted Label")
+        plt.ylabel("True Label")
+        plt.show()
 
 
 if __name__ == "__main__":
