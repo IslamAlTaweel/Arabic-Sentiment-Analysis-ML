@@ -95,8 +95,6 @@ file_name = "Arabic.txt"
 # Define the set of valid sentiment LABELS
 LABELS = {"POS", "NEG", "OBJ", "NEUTRAL"}
 
-# Create an empty list to store processed data
-data = []
 
 # Arabic stopwords from NLTK
 nltk.download('stopwords')
@@ -154,7 +152,13 @@ def main():
     evaluate_on_test_set(decisiontree_model, randomforest_model,
                          features_testing, labels_testing)
 
+
+
+
 def convert_to_csv_file():
+    # Create an empty list to store processed data
+    data = []
+
     # ensure that the input file exists and was found by the program
     try:
         # Open the text file in UTF-8 encoding
@@ -232,9 +236,8 @@ def clean_text(text):
 
 def normalize_arabic(text):
     text = re.sub("[إأآا]", "ا", text)
-    text = re.sub("ي", "ى", text)
-    text = re.sub("ه", "ة", text)
-    text = re.sub("و", "ؤ", text)
+    text = re.sub(r"ي\b", "ى", text)  # only end of word
+    text = re.sub(r"ه\b", "ة", text)  # common normalization direction
     return text
 
 
@@ -268,6 +271,7 @@ def preprocess_text(text):
 
 
 
+
 # Feature Extraction:
 #   1. Automated Text Representations
 #       a. -TF-IDF: Counts how often words appear.
@@ -284,8 +288,8 @@ def extract_features(df):
     """
 
     # Create a TF-IDF vectorizer
-    # ngram_range=(1,2) → uses single words (unigrams) and word pairs (bigrams)
-    # max_features=5000 → limits vocabulary size to most important 5000 features
+    # ngram_range=(1,2) --> uses single words (unigrams) and word pairs (bigrams)
+    # max_features=5000 --> limits vocabulary size to most important 5000 features
     tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 2),max_features=5000)
 
     # Convert cleaned text into numerical feature vectors
@@ -300,37 +304,70 @@ def extract_features(df):
 
 
 
-# Tweet length
+# TWEET LENGTH FEATURE: The model learns that length can act as a weak proxy for emotional engagement
+#       - Sentiment intensity correlation: Strong emotions often produce longer tweets (rants, praise, complaints)
+#       - Neutral vs. opinionated separation: Very short tweets are more likely to be neutral or factual (“OK”, “Thanks”, “Update posted”)
+#       - Signal amplification: Longer tweets provide more opportunities for sentiment-bearing words
 def tweet_length_feature(text):
     return len(text.split())
 
 
 
 
-# Punctuation usage
+# PUNCTUATION USAGE FEATURE: Punctuation acts as a paralinguistic cue (a substitute for tone of voice in text)
+#       - Exclamation marks : excitement, anger, enthusiasm
+#       - Question marks : doubt, disbelief, sarcasm (context-dependent)
+#       - Multiple punctuation : emotional intensity or exaggeration
 import string
+ARABIC_PUNCTUATION = "؟،؛ـ"
 def punctuation_count(text):
     count = 0
     for char in text:
-        if char in string.punctuation:
+        if char in string.punctuation or char in ARABIC_PUNCTUATION:
             count += 1
     return count
 
 
 
+# REPEATED PUNCTUATION FEATURE : This captures emotional emphasis like:
+def repeated_punctuation_count(text):
+    return len(re.findall(r'([!?؟])\1+', text))
 
-# character-based repetition  patterns
-def repetition_feature(text):
-    return len(re.findall(r'(.)\1+', text))
 
 
-# Hashtag Feature
+
+# REPEATED WORDS FEATURE (word elongation or duplication): A classifier learns that repetition increases confidence in sentiment polarity,
+#                                                          not necessarily changing the direction but strengthening it.
+#       - Emphasis and intensity: Repetition is a linguistic signal of strong emotion.
+#       - Common in informal text: Social media users amplify sentiment through repetition rather than formal modifiers.
+#       - Polarity strengthening: Repetition rarely occurs in neutral statements.
+def char_elongation_count(text):
+    return len(re.findall(r'(.)\1{2,}', text))
+
+def word_repetition_count(text):
+    return len(re.findall(r'\b(\w+)\s+\1\b', text))
+
+
+
+# PRESENCE OF HASHTAGS FEATURE: The model learns that hashtags modify the interpretation of the sentence
+#       - Explicit sentiment labeling : Users often encode sentiment directly in hashtags:  #loveit, #hateit, #fail, #awesome
+#       - Topic–sentiment coupling : Hashtags bind sentiment to a specific entity or event: #iPhone, #WorldCup, #CustomerService
+#       - Emphasis and stance : ex., Repeated hashtags (#fail #fail #fail) (These signal strong emotional stance)
+#       - Sarcasm and meta-commentary : Some hashtags frame the entire tweet sarcastically: ex., #blessed (often ironic) ,#justsaying
 def hashtag_count(text):
     return len(re.findall(r"#\w+", text))
 
 
 
-# Emoticon / Emoji Feature
+
+# EMOJIS / EMOTICONS FEATURE:
+#   - Direct expression of emotion (paralinguistic signals)
+#   - Visual substitutes for facial expressions and tone
+#   - Strong sentiment polarity: Many emojis have clear, dominant sentiment: (positive or negative)
+#                                This provides high-confidence sentiment cues, especially when text is short or ambiguous.
+#                                The model learns that emojis can override or disambiguate text sentiment.
+#   - Sentiment intensity: Multiple emojis (Strong emotion amplification). Emoji frequency can function as an intensity scalar.
+#   - Sarcasm and irony signals (Certain emojis often signal sarcasm), critical because sarcasm is difficult to detect from words alone.
 def emoji_count(text):
     emoji_pattern = re.compile(
         "["
@@ -343,22 +380,34 @@ def emoji_count(text):
     return len(emoji_pattern.findall(text))
 
 
+def emoticon_count(text):
+    emoticons = r'(:\)|:\(|:D|<3|;\)|:-\)|:-\(|:-D)'
+    return len(re.findall(emoticons, text))
+
 
 
 # Combine handcrafted features
 def extract_handEngineered_features(df):
     df["tweet_length"] = df["cleaned_text"].apply(tweet_length_feature)
-    df["punctuation_count"] = df["text"].apply(punctuation_count)  # uncleaned text
-    df["repetition_count"] = df["text"].apply(repetition_feature)  # uncleaned text
-    df["hashtag_count"] = df["text"].apply(hashtag_count)          # uncleaned text
-    df["emoji_count"] = df["text"].apply(emoji_count)              # uncleaned text
+
+    # Use RAW text for social signals
+    df["punctuation_count"] = df["text"].apply(punctuation_count)
+    df["char_elongation_count"] = df["text"].apply(char_elongation_count)
+    df["word_repetition_count"] = df["text"].apply(word_repetition_count)
+    df["hashtag_count"] = df["text"].apply(hashtag_count)
+    df["emoji_count"] = df["text"].apply(emoji_count)
+    df["emoticon_count"] = df["text"].apply(emoticon_count)
+    df["repeated_punct_count"] = df["text"].apply(repeated_punctuation_count)
 
     return df[[
         "tweet_length",
         "punctuation_count",
-        "repetition_count",
+        "char_elongation_count",
+        "word_repetition_count",
         "hashtag_count",
-        "emoji_count"
+        "emoji_count",
+        "emoticon_count",
+        "repeated_punct_count"
     ]]
 
 
@@ -366,7 +415,6 @@ def extract_handEngineered_features(df):
 
 # Combine TF-IDF + handcrafted features
 from scipy.sparse import hstack
-
 def combine_features(tfidf_features, handcrafted_features):
     return hstack([tfidf_features, handcrafted_features.values])
 
@@ -390,22 +438,31 @@ def split_dataset(features, labels):
 
 
 
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import classification_report, confusion_matrix
-def train_and_evaluate_models(features_training, labels_training, features_validation, labels_validation):
+
+def train_and_evaluate_models(features_training, labels_training,
+                              features_validation, labels_validation):
     # --------------------------
     # 1. Decision Tree
     # --------------------------
     decisiontree_parameters = {
         "max_depth": [None, 10, 20, 30],
-        "min_samples_split": [2, 5, 10],
-        "class_weight": ["balanced"]  # handle class imbalance
+        "min_samples_split": [2, 5, 10]
     }
 
-    decisiontree = DecisionTreeClassifier(random_state=42)
-    decisiontree_grid = GridSearchCV(decisiontree, decisiontree_parameters, cv=3, scoring='f1_macro', n_jobs=-1)
+    # Handle class imbalance directly here
+    decisiontree = DecisionTreeClassifier(
+        random_state=42,
+        class_weight="balanced"
+    )
+
+    decisiontree_grid = GridSearchCV(
+        decisiontree,
+        decisiontree_parameters,
+        cv=3,
+        scoring='f1_macro',
+        n_jobs=-1
+    )
+
     decisiontree_grid.fit(features_training, labels_training)
 
     print("=== Decision Tree Best Parameters ===")
@@ -422,12 +479,23 @@ def train_and_evaluate_models(features_training, labels_training, features_valid
     randomforest_parameters = {
         "n_estimators": [100, 200],
         "max_depth": [None, 10, 20],
-        "min_samples_split": [2, 5],
-        "class_weight": ["balanced"]
+        "min_samples_split": [2, 5]
     }
 
-    randomforest = RandomForestClassifier(random_state=42)
-    randomforest_grid = GridSearchCV(randomforest, randomforest_parameters, cv=3, scoring='f1_macro', n_jobs=-1)
+    # Handle class imbalance directly
+    randomforest = RandomForestClassifier(
+        random_state=42,
+        class_weight="balanced"
+    )
+
+    randomforest_grid = GridSearchCV(
+        randomforest,
+        randomforest_parameters,
+        cv=3,
+        scoring='f1_macro',
+        n_jobs=-1
+    )
+
     randomforest_grid.fit(features_training, labels_training)
 
     print("\n=== Random Forest Best Parameters ===")
@@ -438,7 +506,7 @@ def train_and_evaluate_models(features_training, labels_training, features_valid
     print(classification_report(labels_validation, randomforest_predictions))
     print("Confusion Matrix:\n", confusion_matrix(labels_validation, randomforest_predictions))
 
-    # Return the trained models in case we need them later
+    # Return best trained models
     return decisiontree_grid.best_estimator_, randomforest_grid.best_estimator_
 
 
@@ -446,8 +514,6 @@ def train_and_evaluate_models(features_training, labels_training, features_valid
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import seaborn as sns
-
-
 def evaluate_on_test_set(decision_tree_model, random_forest_model,
                          features_testing, labels_testing):
     """
