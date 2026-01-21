@@ -88,6 +88,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.preprocessing import StandardScaler
 
 # Name of the input file consisting of the tweets in arabic
 file_name = "Arabic.txt"
@@ -99,59 +100,149 @@ LABELS = {"POS", "NEG", "OBJ", "NEUTRAL"}
 # Arabic stopwords from NLTK
 nltk.download('stopwords')
 arabic_stopwords = set(stopwords.words('arabic'))
+# Remove negation words from stopwords
+negations = {"مش", "مو", "ما", "ليس", "لا", "لم", "لن", "بدون", "غير"}
+arabic_stopwords = arabic_stopwords - negations
 stemmer = ISRIStemmer()
-
+emoji_dict = {
+    "😂": " EMO_POS ",
+    "❤️": " EMO_POS ",
+    "😡": " EMO_NEG ",
+    "😢": " EMO_NEG "
+}
 
 
 
 def main():
+    # --------------------------
+    # 1. Load dataset
+    # --------------------------
     df = convert_to_csv_file()
     if df is None:
         return
 
-    # Show first 5 rows fully (no truncation)
-    pd.set_option("display.max_colwidth", None)  # Don't truncate text
+    pd.set_option("display.max_colwidth", None)
 
     print("=== BEFORE CLEANING ===")
     print(df[["text", "label"]].head())
     data_analysis(df)
 
-
-    # Apply preprocessing
+    # --------------------------
+    # 2. Text preprocessing
+    # --------------------------
     df["cleaned_text"] = df["text"].apply(preprocess_text)
 
     print("\n=== AFTER CLEANING ===")
     print(df[["cleaned_text", "label"]].head())
     data_analysis(df)
 
-    # save preprocessed CSV
+    # Save preprocessed data
     df.to_csv(f"{file_name}_preprocessed.csv", index=False, encoding="utf-8-sig")
     print(f"\nPreprocessed data saved to '{file_name}_preprocessed.csv'")
 
+    # --------------------------
+    # 3. Split TEXT and LABELS
+    # --------------------------
+    texts = df["cleaned_text"]
+    labels = df["label"]
 
-    tfidf_features, labels, vectorizer = extract_features(df)   # Generate TF–IDF vectors
-
-    handEngineered_features = extract_handEngineered_features(df)
-
-    final_features = combine_features(tfidf_features, handEngineered_features)
-
-    features_training, features_validation, features_testing, labels_training, labels_validation, labels_testing = split_dataset(final_features, labels)
-
-    print("Train size:", features_training.shape)
-    print("Validation size:", features_validation.shape)
-    print("Test size:", features_testing.shape)
-
-    print("TF-IDF shape:", tfidf_features.shape)
-    print("Handcrafted shape:", handEngineered_features.shape)
-    print("Final shape:", final_features.shape)
+    texts_train, texts_val, texts_test, labels_train, labels_val, labels_test = split_dataset(texts, labels)
 
     # --------------------------
-    # Train & evaluate models
+    # 4. TF-IDF features (fit only on training)
     # --------------------------
-    decisiontree_model, randomforest_model = train_and_evaluate_models(features_training, labels_training, features_validation, labels_validation)
-    evaluate_on_test_set(decisiontree_model, randomforest_model,
-                         features_testing, labels_testing)
+    tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000)
 
+    features_train_tfidf = tfidf_vectorizer.fit_transform(texts_train)
+    features_val_tfidf = tfidf_vectorizer.transform(texts_val)
+    features_test_tfidf = tfidf_vectorizer.transform(texts_test)
+
+    # --------------------------
+    # 5. Hand-engineered features
+    # --------------------------
+    features_train_handcrafted = extract_handEngineered_features(df.loc[texts_train.index])
+    features_val_handcrafted = extract_handEngineered_features(df.loc[texts_val.index])
+    features_test_handcrafted = extract_handEngineered_features(df.loc[texts_test.index])
+
+    # --------------------------
+    # 6. OPTIONAL: Word embeddings
+    # --------------------------
+    use_embeddings = False  # set True for embeddings (slower)
+    if use_embeddings:
+        features_train_embeddings, embedding_model = train_word_embeddings(df.loc[texts_train.index], method="fasttext")
+        features_val_embeddings = compute_embedding_vectors(df.loc[texts_val.index], embedding_model, features_train_embeddings.shape[1])
+        features_test_embeddings = compute_embedding_vectors(df.loc[texts_test.index], embedding_model, features_train_embeddings.shape[1])
+
+        # Combine all features: TF-IDF + handcrafted + embeddings
+        features_train = combine_all_features(features_train_tfidf, features_train_handcrafted, features_train_embeddings)
+        features_val = combine_all_features(features_val_tfidf, features_val_handcrafted, features_val_embeddings)
+        features_test = combine_all_features(features_test_tfidf, features_test_handcrafted, features_test_embeddings)
+    else:
+        # --------------------------
+        # SCALE HANDCRAFTED FEATURES (FIX)
+        # --------------------------
+        scaler = StandardScaler()
+        handcrafted_train_scaled = scaler.fit_transform(features_train_handcrafted)
+        handcrafted_val_scaled = scaler.transform(features_val_handcrafted)
+        handcrafted_test_scaled = scaler.transform(features_test_handcrafted)
+
+        # Combine features for DT / RF / MLP
+        features_train = hstack([features_train_tfidf, handcrafted_train_scaled])
+        features_val = hstack([features_val_tfidf, handcrafted_val_scaled])
+        features_test = hstack([features_test_tfidf, handcrafted_test_scaled])
+
+        print("Training features shape:", features_train.shape)
+        print("Validation features shape:", features_val.shape)
+        print("Test features shape:", features_test.shape)
+
+        decision_tree_model, random_forest_model, nb_model, mlp_model = train_and_evaluate_models(
+            features_train,
+            features_train_tfidf,
+            labels_train,
+            features_val,
+            labels_val
+        )
+
+        evaluate_on_test_set(
+            decision_tree_model,
+            random_forest_model,
+            nb_model,
+            mlp_model,
+            features_test,
+            features_test_tfidf,
+            labels_test
+        )
+
+
+
+
+
+
+
+def compute_embedding_vectors(df_subset, model, vector_size):
+    """
+    Convert a DataFrame of cleaned tweets into embedding vectors using a trained Word2Vec/FastText model.
+
+    Args:
+        df_subset: DataFrame with a 'cleaned_text' column
+        model: trained Word2Vec or FastText model
+        vector_size: size of embedding vectors
+
+    Returns:
+        embeddings_matrix: numpy array of shape (num_samples, vector_size)
+    """
+    embeddings_matrix = []
+
+    for text in df_subset["cleaned_text"]:
+        words = text.split()
+        vectors = [model.wv[word] for word in words if word in model.wv]
+        if vectors:
+            avg_vector = np.mean(vectors, axis=0)
+        else:
+            avg_vector = np.zeros(vector_size)
+        embeddings_matrix.append(avg_vector)
+
+    return np.array(embeddings_matrix)
 
 
 
@@ -199,7 +290,6 @@ def data_analysis(df):
     print(df.shape)
     # Print the number of samples per sentiment label (class distribution)
     print(df["label"].value_counts())
-
     # Plot class distribution
     df["label"].value_counts().plot(kind="bar")
     plt.title("Sentiment Class Distribution")
@@ -259,10 +349,37 @@ def stem_text(text):
 
 
 
+def remove_elongation(text):
+    return re.sub(r'(.)\1+', r'\1', text)
+
+def replace_emojis(text):
+    for emoji, token in emoji_dict.items():
+        text = text.replace(emoji, token)
+    return text
+
+
+def handle_negation(text):
+    tokens = text.split()
+    result = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] in negations and i + 1 < len(tokens):
+            result.append("NOT_" + tokens[i + 1])
+            i += 2
+        else:
+            result.append(tokens[i])
+            i += 1
+    return " ".join(result)
+
+
+
 
 def preprocess_text(text):
     # Apply basic cleaning
     text = clean_text(text)
+    text = remove_elongation(text)
+    text = replace_emojis(text)
+    text = handle_negation(text)
     # Stopword removal
     text = remove_stopwords(text)
     text = stem_text(text)
@@ -301,6 +418,57 @@ def extract_features(df):
 
     return text_features, sentiment_labels, tfidf_vectorizer
 
+
+
+
+
+from gensim.models import Word2Vec, FastText
+import numpy as np
+
+def train_word_embeddings(df, method="word2vec", vector_size=100, window=5, min_count=2, epochs=5):
+    """
+    Train Word2Vec or FastText embeddings on cleaned Arabic tweets.
+
+    Args:
+        df: DataFrame with 'cleaned_text' column
+        method: "word2vec" or "fasttext"
+        vector_size: embedding dimension
+        window: context window size
+        min_count: ignore words with frequency < min_count
+        epochs: number of training epochs
+
+    Returns:
+        embeddings_matrix: numpy array of shape (num_samples, vector_size)
+        model: trained Word2Vec or FastText model
+    """
+    # Tokenize text into lists of words
+    sentences = [text.split() for text in df["cleaned_text"]]
+
+    # Train the embedding model
+    if method.lower() == "word2vec":
+        model = Word2Vec(sentences, vector_size=vector_size, window=window,
+                         min_count=min_count, workers=4, epochs=epochs)
+    elif method.lower() == "fasttext":
+        model = FastText(sentences, vector_size=vector_size, window=window,
+                         min_count=min_count, workers=4, epochs=epochs)
+    else:
+        raise ValueError("method must be 'word2vec' or 'fasttext'")
+
+    # Compute tweet embeddings by averaging word vectors
+    embeddings_matrix = []
+    for sentence in sentences:
+        vectors = []
+        for word in sentence:
+            if word in model.wv:
+                vectors.append(model.wv[word])
+        if vectors:
+            avg_vector = np.mean(vectors, axis=0)
+        else:
+            avg_vector = np.zeros(vector_size)
+        embeddings_matrix.append(avg_vector)
+
+    embeddings_matrix = np.array(embeddings_matrix)
+    return embeddings_matrix, model
 
 
 
@@ -386,6 +554,30 @@ def emoticon_count(text):
 
 
 
+
+
+def negation_count(text):
+    negations = ["مش", "مو", "ما", "ليس", "لا", "لم", "لن", "بدون", "غير"]
+    return sum(text.count(neg) for neg in negations)
+
+
+
+def emoji_features(text):
+    return {
+        "has_positive_emoji": int("EMO_POS" in text),
+        "has_negative_emoji": int("EMO_NEG" in text)
+    }
+
+
+
+
+def dialect_feature(text):
+    dialect_words = ["مش", "مو", "شو", "ليش", "هيك"]
+    return int(any(word in text for word in dialect_words))
+
+
+
+
 # Combine handcrafted features
 def extract_handEngineered_features(df):
     df["tweet_length"] = df["cleaned_text"].apply(tweet_length_feature)
@@ -399,6 +591,12 @@ def extract_handEngineered_features(df):
     df["emoticon_count"] = df["text"].apply(emoticon_count)
     df["repeated_punct_count"] = df["text"].apply(repeated_punctuation_count)
 
+    # Fix: use 'cleaned_text' instead of 'clean_text'
+    df["neg_count"] = df["cleaned_text"].apply(negation_count)
+    df["dialect"] = df["cleaned_text"].apply(dialect_feature)
+    emoji_df = df["text"].apply(emoji_features).apply(pd.Series)
+    df = pd.concat([df, emoji_df], axis=1)
+
     return df[[
         "tweet_length",
         "punctuation_count",
@@ -407,16 +605,26 @@ def extract_handEngineered_features(df):
         "hashtag_count",
         "emoji_count",
         "emoticon_count",
-        "repeated_punct_count"
+        "repeated_punct_count",
+        "neg_count",
+        "dialect",
+        "has_positive_emoji",
+        "has_negative_emoji"
     ]]
 
 
 
 
-# Combine TF-IDF + handcrafted features
-from scipy.sparse import hstack
-def combine_features(tfidf_features, handcrafted_features):
-    return hstack([tfidf_features, handcrafted_features.values])
+
+# Combine all features (TF-IDF + embeddings + handcrafted)
+from scipy.sparse import hstack, csr_matrix
+def combine_all_features(tfidf_features, handcrafted_features, embedding_features):
+    """
+    Combine sparse TF-IDF, handcrafted features, and dense embeddings.
+    Embeddings are converted to sparse to hstack with TF-IDF.
+    """
+    embedding_sparse = csr_matrix(embedding_features)
+    return hstack([tfidf_features, handcrafted_features.values, embedding_sparse])
 
 
 
@@ -439,7 +647,10 @@ def split_dataset(features, labels):
 
 
 
-def train_and_evaluate_models(features_training, labels_training,
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.neural_network import MLPClassifier
+
+def train_and_evaluate_models(features_training, features_training_tfidf, labels_training,
                               features_validation, labels_validation):
     # --------------------------
     # 1. Decision Tree
@@ -449,7 +660,6 @@ def train_and_evaluate_models(features_training, labels_training,
         "min_samples_split": [2, 5, 10]
     }
 
-    # Handle class imbalance directly here
     decisiontree = DecisionTreeClassifier(
         random_state=42,
         class_weight="balanced"
@@ -459,7 +669,7 @@ def train_and_evaluate_models(features_training, labels_training,
         decisiontree,
         decisiontree_parameters,
         cv=3,
-        scoring='f1_macro',
+        scoring="f1_macro",
         n_jobs=-1
     )
 
@@ -467,11 +677,6 @@ def train_and_evaluate_models(features_training, labels_training,
 
     print("=== Decision Tree Best Parameters ===")
     print(decisiontree_grid.best_params_)
-
-    decisiontree_predictions = decisiontree_grid.predict(features_validation)
-    print("\n--- Decision Tree Evaluation ---")
-    print(classification_report(labels_validation, decisiontree_predictions))
-    print("Confusion Matrix:\n", confusion_matrix(labels_validation, decisiontree_predictions))
 
     # --------------------------
     # 2. Random Forest
@@ -482,7 +687,6 @@ def train_and_evaluate_models(features_training, labels_training,
         "min_samples_split": [2, 5]
     }
 
-    # Handle class imbalance directly
     randomforest = RandomForestClassifier(
         random_state=42,
         class_weight="balanced"
@@ -492,7 +696,7 @@ def train_and_evaluate_models(features_training, labels_training,
         randomforest,
         randomforest_parameters,
         cv=3,
-        scoring='f1_macro',
+        scoring="f1_macro",
         n_jobs=-1
     )
 
@@ -501,42 +705,70 @@ def train_and_evaluate_models(features_training, labels_training,
     print("\n=== Random Forest Best Parameters ===")
     print(randomforest_grid.best_params_)
 
-    randomforest_predictions = randomforest_grid.predict(features_validation)
-    print("\n--- Random Forest Evaluation ---")
-    print(classification_report(labels_validation, randomforest_predictions))
-    print("Confusion Matrix:\n", confusion_matrix(labels_validation, randomforest_predictions))
+    # --------------------------
+    # 3. Naïve Bayes (TF-IDF ONLY)
+    # --------------------------
+    nb = MultinomialNB(alpha=0.5)
+    nb.fit(features_training_tfidf, labels_training)
+    print("\n=== Naïve Bayes Trained (TF-IDF only) ===")
 
-    # Return best trained models
-    return decisiontree_grid.best_estimator_, randomforest_grid.best_estimator_
+    # --------------------------
+    # 4. MLP Neural Network
+    # --------------------------
+    mlp = MLPClassifier(
+        hidden_layer_sizes=(128, 64),
+        learning_rate_init=0.001,
+        max_iter=100,
+        random_state=42
+    )
 
+    mlp.fit(features_training, labels_training)
+    print("\n=== MLP Neural Network Trained ===")
+
+    # --------------------------
+    # Return trained models
+    # --------------------------
+    return (
+        decisiontree_grid.best_estimator_,
+        randomforest_grid.best_estimator_,
+        nb,
+        mlp
+    )
 
 
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import seaborn as sns
-def evaluate_on_test_set(decision_tree_model, random_forest_model,
-                         features_testing, labels_testing):
+# --------------------------------------------------
+# EVALUATION
+# --------------------------------------------------
+def evaluate_on_test_set(decision_tree_model, random_forest_model, nb_model, mlp_model,
+                         features_testing, features_testing_tfidf, labels_testing):
     """
     Evaluates the trained models on the test set.
     Prints accuracy, precision, recall, F1-score and displays confusion matrices.
     """
 
     models = {
-        "Decision Tree": decision_tree_model,
-        "Random Forest": random_forest_model
+        "Decision Tree": (decision_tree_model, features_testing),
+        "Random Forest": (random_forest_model, features_testing),
+        "Naïve Bayes": (nb_model, features_testing_tfidf),  # TF-IDF ONLY
+        "MLP Neural Network": (mlp_model, features_testing)
     }
 
-    for name, model in models.items():
+    label_order = ["POS", "NEG", "OBJ", "NEUTRAL"]
+
+    for name, (model, features) in models.items():
         print(f"\n=== {name} Evaluation on Test Set ===")
 
         # Make predictions
-        predictions = model.predict(features_testing)
+        predictions = model.predict(features)
 
         # Compute metrics
         acc = accuracy_score(labels_testing, predictions)
-        prec = precision_score(labels_testing, predictions, average='macro')
-        rec = recall_score(labels_testing, predictions, average='macro')
-        f1 = f1_score(labels_testing, predictions, average='macro')
+        prec = precision_score(labels_testing, predictions, average='macro', zero_division=0)
+        rec = recall_score(labels_testing, predictions, average='macro', zero_division=0)
+        f1 = f1_score(labels_testing, predictions, average='macro', zero_division=0)
 
         print(f"Accuracy: {acc:.4f}")
         print(f"Precision: {prec:.4f}")
@@ -544,19 +776,24 @@ def evaluate_on_test_set(decision_tree_model, random_forest_model,
         print(f"F1-score: {f1:.4f}")
 
         # Confusion matrix
-        cm = confusion_matrix(labels_testing, predictions, labels=["POS", "NEG", "OBJ", "NEUTRAL"])
+        cm = confusion_matrix(labels_testing, predictions, labels=label_order)
         print("Confusion Matrix:\n", cm)
 
-        # Plot the confusion matrix as heatmap
+        # Plot confusion matrix as heatmap
         plt.figure(figsize=(6, 4))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                    xticklabels=["POS", "NEG", "OBJ", "NEUTRAL"],
-                    yticklabels=["POS", "NEG", "OBJ", "NEUTRAL"])
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt='d',
+            cmap='Blues',
+            xticklabels=label_order,
+            yticklabels=label_order
+        )
         plt.title(f"{name} Confusion Matrix")
         plt.xlabel("Predicted Label")
         plt.ylabel("True Label")
+        plt.tight_layout()
         plt.show()
-
 
 if __name__ == "__main__":
     main()
