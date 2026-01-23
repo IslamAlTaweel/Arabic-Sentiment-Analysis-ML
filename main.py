@@ -165,6 +165,14 @@ def main():
     features_test_handcrafted = extract_handEngineered_features(df.loc[texts_test.index])
 
     # --------------------------
+    # SCALE HANDCRAFTED FEATURES (FIX)
+    # --------------------------
+    scaler = StandardScaler()
+    handcrafted_train_scaled = scaler.fit_transform(features_train_handcrafted)
+    handcrafted_val_scaled = scaler.transform(features_val_handcrafted)
+    handcrafted_test_scaled = scaler.transform(features_test_handcrafted)
+
+    # --------------------------
     # 6. OPTIONAL: Word embeddings
     # --------------------------
     use_embeddings = False  # set True for embeddings (slower)
@@ -174,28 +182,21 @@ def main():
         features_test_embeddings = compute_embedding_vectors(df.loc[texts_test.index], embedding_model, features_train_embeddings.shape[1])
 
         # Combine all features: TF-IDF + handcrafted + embeddings
-        features_train = combine_all_features(features_train_tfidf, features_train_handcrafted, features_train_embeddings)
-        features_val = combine_all_features(features_val_tfidf, features_val_handcrafted, features_val_embeddings)
-        features_test = combine_all_features(features_test_tfidf, features_test_handcrafted, features_test_embeddings)
+        features_train = combine_all_features(features_train_tfidf, handcrafted_train_scaled, features_train_embeddings)
+        features_val = combine_all_features(features_val_tfidf, handcrafted_val_scaled, features_val_embeddings)
+        features_test = combine_all_features(features_test_tfidf, handcrafted_test_scaled, features_test_embeddings)
     else:
-        # --------------------------
-        # SCALE HANDCRAFTED FEATURES (FIX)
-        # --------------------------
-        scaler = StandardScaler()
-        handcrafted_train_scaled = scaler.fit_transform(features_train_handcrafted)
-        handcrafted_val_scaled = scaler.transform(features_val_handcrafted)
-        handcrafted_test_scaled = scaler.transform(features_test_handcrafted)
 
         # Combine features for DT / RF / MLP
         features_train = hstack([features_train_tfidf, handcrafted_train_scaled])
         features_val = hstack([features_val_tfidf, handcrafted_val_scaled])
         features_test = hstack([features_test_tfidf, handcrafted_test_scaled])
 
-        print("Training features shape:", features_train.shape)
-        print("Validation features shape:", features_val.shape)
-        print("Test features shape:", features_test.shape)
+    print("Training features shape:", features_train.shape)
+    print("Validation features shape:", features_val.shape)
+    print("Test features shape:", features_test.shape)
 
-        decision_tree_model, random_forest_model, nb_model, mlp_model = train_and_evaluate_models(
+    decision_tree_model, random_forest_model, nb_model, mlp_model = train_and_evaluate_models(
             features_train,
             features_train_tfidf,
             labels_train,
@@ -203,7 +204,7 @@ def main():
             labels_val
         )
 
-        evaluate_on_test_set(
+    evaluate_on_test_set(
             decision_tree_model,
             random_forest_model,
             nb_model,
