@@ -162,10 +162,51 @@ def main():
 
     texts_train, texts_val, texts_test, labels_train, labels_val, labels_test = split_dataset(texts, labels)
 
+    from sklearn.utils.class_weight import compute_class_weight
+    import numpy as np
+
+    classes = np.unique(labels_train)
+
+    class_weights_array = compute_class_weight(
+        class_weight="balanced",
+        classes=classes,
+        y=labels_train
+    )
+
+    class_weight_dict = dict(zip(classes, class_weights_array))
+    print("Class weights:", class_weight_dict)
+
     # --------------------------
     # 4. TF-IDF features (fit only on training)
     # --------------------------
-    tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000)
+    tfidf_vectorizer = TfidfVectorizer(
+        ngram_range=(1, 1),
+        # Use ONLY unigrams.
+        # - Arabic sentiment words often carry polarity by themselves
+        # - Bigrams dramatically increase sparsity
+        # - Unigrams generalize better on small/medium datasets
+        # - Helps Naive Bayes the most
+
+        max_features=3000,
+        # Keep only the 3000 most informative terms (highest TF-IDF scores).
+        # - Reduces dimensionality → less overfitting
+        # - Removes rare/noisy tokens (typos, names, elongated words)
+        # - Forces the model to focus on high-frequency, sentiment-bearing words
+        # - Improves generalization on the test set
+
+        min_df=5,
+        # Ignore words that appear in fewer than 5 documents.
+        # - Rare words have unreliable statistics
+        # - They add noise, not signal
+        # - Especially important for Naive Bayes (probability estimation)
+        # - Prevents memorization of training-only artifacts
+
+        max_df=0.85
+        # Ignore words that appear in more than 85% of documents.
+        # - Removes near-stopwords that survived preprocessing
+        # - Such words have low information gain
+        # - Improves class separability
+    )
 
     features_train_tfidf = tfidf_vectorizer.fit_transform(texts_train)
     features_val_tfidf = tfidf_vectorizer.transform(texts_val)
@@ -216,7 +257,7 @@ def main():
         features_train,
         features_train_tfidf,
         labels_train,
-        X_train_mlp
+        X_train_mlp, class_weight_dict
     )
 
     evaluate_on_test_set(
@@ -382,26 +423,31 @@ def replace_emojis(text):
     return "".join(result)
 
 
-
-
 def handle_negation(text):
     tokens = text.split()
     result = []
     i = 0
 
     while i < len(tokens):
-        if tokens[i] in negations:
-            result.append(tokens[i])  # keep negation
-            j = i + 1
-            while j < min(i + 3, len(tokens)):
-                result.append("NOT_" + tokens[j])
-                j += 1
-            i = j
+        if tokens[i] in negations and i + 1 < len(tokens):
+            # Keep negation word
+            result.append(tokens[i])
+
+            # Negate only the next non-stopword
+            next_word = tokens[i + 1]
+            if next_word not in arabic_stopwords:
+                result.append("NOT_" + next_word)
+            else:
+                result.append(next_word)
+
+            i += 2
         else:
             result.append(tokens[i])
             i += 1
 
     return " ".join(result)
+
+
 
 
 
@@ -603,10 +649,8 @@ def negation_count(text):
 
 
 def emoji_features(text):
-    return {
-        "has_positive_emoji": int("EMO_POS" in text),
-        "has_negative_emoji": int("EMO_NEG" in text)
-    }
+    return pd.Series({"has_positive_emoji": int("EMO_POS" in text),
+                      "has_negative_emoji": int("EMO_NEG" in text)})
 
 
 
@@ -634,7 +678,7 @@ def extract_handEngineered_features(df):
     # Fix: use 'cleaned_text' instead of 'clean_text'
     df["neg_count"] = df["cleaned_text"].apply(negation_count)
     df["dialect"] = df["cleaned_text"].apply(dialect_feature)
-    emoji_df = df["text"].apply(emoji_features).apply(pd.Series)
+    emoji_df = df["text"].apply(emoji_features)
     df = pd.concat([df, emoji_df], axis=1)
 
     return df[[
@@ -702,7 +746,7 @@ from sklearn.neural_network import MLPClassifier
 def train_and_evaluate_models(
     features_training,
     features_training_tfidf,
-    labels_training, X_train_mlp
+    labels_training, X_train_mlp, class_weight_dict
 ):
     # --------------------------
     # 1. Decision Tree
@@ -714,7 +758,7 @@ def train_and_evaluate_models(
 
     decisiontree = DecisionTreeClassifier(
         random_state=42,
-        class_weight="balanced"
+        class_weight=class_weight_dict
     )
 
     decisiontree_grid = GridSearchCV(
@@ -741,7 +785,7 @@ def train_and_evaluate_models(
 
     randomforest = RandomForestClassifier(
         random_state=42,
-        class_weight="balanced"
+        class_weight=class_weight_dict
     )
 
     randomforest_grid = GridSearchCV(
