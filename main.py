@@ -127,6 +127,30 @@ NEU_EMOJIS = {
 # Arabic and english punctuations
 punctuations = '''`÷×؛<>_()*&^%][ـ،/:"؟.,'{}~¦+|!”…“–ـ'''
 
+# --------------------------
+# 1. Define hyperparameter grids for validation-based tuning
+# --------------------------
+decisiontree_params = {
+    "max_depth": [None, 10, 20, 30],
+    "min_samples_split": [2, 5, 10]
+}
+
+randomforest_params = {
+    "n_estimators": [100, 200],
+    "max_depth": [None, 10, 20],
+    "min_samples_split": [2, 5]
+}
+
+mlp_params = {
+    "hidden_layer_sizes": [(128, 64), (64, 32)],
+    "learning_rate_init": [0.001, 0.01],
+    "max_iter": [100, 200]
+}
+
+nb_params = {
+    "alpha": [0.1, 0.5, 1.0]
+}
+
 def main():
     # --------------------------
     # 1. Load dataset
@@ -222,7 +246,7 @@ def main():
     scaler = StandardScaler()
     features_train_handcrafted = scaler.fit_transform(features_train_handcrafted)
     features_test_handcrafted = scaler.transform(features_test_handcrafted)
-
+    features_val_handcrafted = scaler.transform(features_val_handcrafted)
     # --------------------------
     # 6. OPTIONAL: Word embeddings
     # --------------------------
@@ -255,10 +279,17 @@ def main():
 
     decision_tree_model, random_forest_model, nb_model, mlp_model = train_and_evaluate_models(
         features_train,
+        features_val,
         features_train_tfidf,
+        features_val_tfidf,
         labels_train,
-        X_train_mlp, class_weight_dict
+        labels_val,
+        X_train_mlp,
+        X_val_mlp,
+        class_weight_dict
     )
+
+
 
     evaluate_on_test_set(
             decision_tree_model,
@@ -741,94 +772,204 @@ def split_dataset(features, labels):
 
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.neural_network import MLPClassifier
+from scipy.sparse import vstack
+from sklearn.metrics import f1_score
+import numpy as np
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.utils import resample
 
 def train_and_evaluate_models(
     features_training,
+    features_validation,
     features_training_tfidf,
-    labels_training, X_train_mlp, class_weight_dict
+    features_validation_tfidf,
+    labels_training,
+    labels_validation,
+    X_train_mlp,
+    X_val_mlp,
+    class_weight_dict
 ):
-    # --------------------------
-    # 1. Decision Tree
-    # --------------------------
-    decisiontree_parameters = {
-        "max_depth": [None, 10, 20, 30],
-        "min_samples_split": [2, 5, 10]
-    }
+    # ==================================================
+    # 0. Prepare MLP inputs: dense and numeric
+    # ==================================================
+    if hasattr(X_train_mlp, "toarray"):
+        X_train_mlp = X_train_mlp.toarray()
+    if hasattr(X_val_mlp, "toarray"):
+        X_val_mlp = X_val_mlp.toarray()
 
-    decisiontree = DecisionTreeClassifier(
+    X_train_mlp = X_train_mlp.astype(np.float32)
+    X_val_mlp   = X_val_mlp.astype(np.float32)
+
+    # Upsample minority classes for MLP
+    y_train_mlp = np.array(labels_training)
+    X_train_mlp_df = pd.DataFrame(X_train_mlp)
+    X_train_mlp_df['label'] = y_train_mlp
+
+    # Separate classes
+    df_POS = X_train_mlp_df[X_train_mlp_df['label']=='POS']
+    df_NEG = X_train_mlp_df[X_train_mlp_df['label']=='NEG']
+    df_OBJ = X_train_mlp_df[X_train_mlp_df['label']=='OBJ']
+
+    max_size = max(len(df_POS), len(df_NEG), len(df_OBJ))
+
+    df_POS_up = resample(df_POS, replace=True, n_samples=max_size, random_state=42)
+    df_NEG_up = resample(df_NEG, replace=True, n_samples=max_size, random_state=42)
+    df_OBJ_up = resample(df_OBJ, replace=True, n_samples=max_size, random_state=42)
+
+    df_upsampled = pd.concat([df_POS_up, df_NEG_up, df_OBJ_up])
+    X_train_mlp = df_upsampled.drop(columns=['label']).values
+    y_train_mlp = df_upsampled['label'].values
+
+    # ==================================================
+    # 1. DECISION TREE — validation-based tuning
+    # ==================================================
+    best_f1 = 0
+    best_dt_params = None
+
+    for max_depth in [None, 10, 20, 30]:
+        for min_samples_split in [2, 5, 10]:
+            dt = DecisionTreeClassifier(
+                max_depth=max_depth,
+                min_samples_split=min_samples_split,
+                random_state=42,
+                class_weight=class_weight_dict
+            )
+            dt.fit(features_training, labels_training)
+            preds = dt.predict(features_validation)
+            f1 = f1_score(labels_validation, preds, average="macro")
+            if f1 > best_f1:
+                best_f1 = f1
+                best_dt_params = (max_depth, min_samples_split)
+
+    print("=== Decision Tree Best Params (Validation) ===")
+    print(f"max_depth={best_dt_params[0]}, min_samples_split={best_dt_params[1]}")
+
+    X_dt_full = vstack([features_training, features_validation])
+    y_dt_full = np.concatenate([labels_training, labels_validation])
+
+    final_dt = DecisionTreeClassifier(
+        max_depth=best_dt_params[0],
+        min_samples_split=best_dt_params[1],
         random_state=42,
         class_weight=class_weight_dict
     )
+    final_dt.fit(X_dt_full, y_dt_full)
 
-    decisiontree_grid = GridSearchCV(
-        decisiontree,
-        decisiontree_parameters,
-        cv=3,
-        scoring="f1_macro",
-        n_jobs=-1
+    # ==================================================
+    # 2. RANDOM FOREST — validation-based tuning
+    # ==================================================
+    best_f1 = 0
+    best_rf_params = None
+
+    for n_estimators in [100, 200]:
+        for max_depth in [None, 10, 20]:
+            for min_samples_split in [2, 5]:
+                rf = RandomForestClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    min_samples_split=min_samples_split,
+                    random_state=42,
+                    class_weight=class_weight_dict,
+                    n_jobs=-1
+                )
+                rf.fit(features_training, labels_training)
+                preds = rf.predict(features_validation)
+                f1 = f1_score(labels_validation, preds, average="macro")
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_rf_params = (n_estimators, max_depth, min_samples_split)
+
+    print("\n=== Random Forest Best Params (Validation) ===")
+    print(
+        f"n_estimators={best_rf_params[0]}, "
+        f"max_depth={best_rf_params[1]}, "
+        f"min_samples_split={best_rf_params[2]}"
     )
 
-    decisiontree_grid.fit(features_training, labels_training)
+    X_rf_full = vstack([features_training, features_validation])
+    y_rf_full = np.concatenate([labels_training, labels_validation])
 
-    print("=== Decision Tree Best Parameters ===")
-    print(decisiontree_grid.best_params_)
-
-    # --------------------------
-    # 2. Random Forest
-    # --------------------------
-    randomforest_parameters = {
-        "n_estimators": [100, 200],
-        "max_depth": [None, 10, 20],
-        "min_samples_split": [2, 5]
-    }
-
-    randomforest = RandomForestClassifier(
+    final_rf = RandomForestClassifier(
+        n_estimators=best_rf_params[0],
+        max_depth=best_rf_params[1],
+        min_samples_split=best_rf_params[2],
         random_state=42,
-        class_weight=class_weight_dict
-    )
-
-    randomforest_grid = GridSearchCV(
-        randomforest,
-        randomforest_parameters,
-        cv=3,
-        scoring="f1_macro",
+        class_weight=class_weight_dict,
         n_jobs=-1
     )
+    final_rf.fit(X_rf_full, y_rf_full)
 
-    randomforest_grid.fit(features_training, labels_training)
+    # ==================================================
+    # 3. NAÏVE BAYES — validation-based alpha tuning
+    # ==================================================
+    best_f1 = 0
+    best_alpha = None
 
-    print("\n=== Random Forest Best Parameters ===")
-    print(randomforest_grid.best_params_)
+    for alpha in [0.1, 0.3, 0.5, 1.0]:
+        nb = MultinomialNB(alpha=alpha)
+        nb.fit(features_training_tfidf, labels_training)
+        preds = nb.predict(features_validation_tfidf)
+        f1 = f1_score(labels_validation, preds, average="macro")
+        if f1 > best_f1:
+            best_f1 = f1
+            best_alpha = alpha
 
-    # --------------------------
-    # 3. Naïve Bayes (TF-IDF ONLY)
-    # --------------------------
-    nb = MultinomialNB(alpha=0.5)
-    nb.fit(features_training_tfidf, labels_training)
-    print("\n=== Naïve Bayes Trained (TF-IDF only) ===")
+    print("\n=== Naïve Bayes Best Alpha (Validation) ===")
+    print(f"alpha={best_alpha}")
 
-    # --------------------------
-    # 4. MLP Neural Network
-    # --------------------------
-    mlp = MLPClassifier(
-        hidden_layer_sizes=(128, 64),
-        learning_rate_init=0.001,
-        max_iter=100,
+    X_nb_full = np.vstack([
+        features_training_tfidf.toarray(),
+        features_validation_tfidf.toarray()
+    ])
+    y_nb_full = np.concatenate([labels_training, labels_validation])
+
+    final_nb = MultinomialNB(alpha=best_alpha)
+    final_nb.fit(X_nb_full, y_nb_full)
+
+    # ==================================================
+    # 4. MLP — validation-based tuning with class balancing
+    # ==================================================
+    best_f1 = 0
+    best_mlp_params = None
+
+    for hidden in [(128,), (128, 64)]:
+        for lr in [0.001, 0.0005]:
+            mlp = MLPClassifier(
+                hidden_layer_sizes=hidden,
+                learning_rate_init=lr,
+                max_iter=150,
+                random_state=42
+            )
+            mlp.fit(X_train_mlp, y_train_mlp)
+            preds = mlp.predict(X_val_mlp)
+            f1 = f1_score(labels_validation, preds, average="macro")
+            if f1 > best_f1:
+                best_f1 = f1
+                best_mlp_params = (hidden, lr)
+
+    print("\n=== MLP Best Params (Validation) ===")
+    print(f"hidden_layers={best_mlp_params[0]}, learning_rate={best_mlp_params[1]}")
+
+    X_mlp_full = np.vstack([X_train_mlp, X_val_mlp])
+    y_mlp_full = np.concatenate([y_train_mlp, labels_validation])
+
+    final_mlp = MLPClassifier(
+        hidden_layer_sizes=best_mlp_params[0],
+        learning_rate_init=best_mlp_params[1],
+        max_iter=500,
         random_state=42
     )
+    final_mlp.fit(X_mlp_full, y_mlp_full)
 
-    mlp.fit(X_train_mlp, labels_training)
-    print("\n=== MLP Neural Network Trained ===")
+    return final_dt, final_rf, final_nb, final_mlp
 
-    # --------------------------
-    # Return trained models
-    # --------------------------
-    return (
-        decisiontree_grid.best_estimator_,
-        randomforest_grid.best_estimator_,
-        nb,
-        mlp
-    )
+
+
 
 
 
