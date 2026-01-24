@@ -98,20 +98,34 @@ LABELS = {"POS", "NEG", "OBJ", "NEUTRAL"}
 
 
 # Arabic stopwords from NLTK
-nltk.download('stopwords')
+#nltk.download('stopwords')
 arabic_stopwords = set(stopwords.words('arabic'))
 # Remove negation words from stopwords
 negations = {"مش", "مو", "ما", "ليس", "لا", "لم", "لن", "بدون", "غير"}
 arabic_stopwords = arabic_stopwords - negations
+# Stemmer
 stemmer = ISRIStemmer()
-emoji_dict = {
-    "😂": " EMO_POS ",
-    "❤️": " EMO_POS ",
-    "😡": " EMO_NEG ",
-    "😢": " EMO_NEG "
+# Emoji dictionary
+EMO_POS = " EMO_POS "
+EMO_NEG = " EMO_NEG "
+EMO_NEU = " EMO_NEU "
+
+POS_EMOJIS = {
+    "😂", "🤣", "😄", "😃", "😊", "😁", "😍", "🥰",
+    "❤️", "💖", "💕", "👍", "👏", "🔥"
 }
 
+NEG_EMOJIS = {
+    "😡", "🤬", "😠", "😢", "😭", "💔",
+    "👎", "😞", "😤", "😰", "😨"
+}
 
+NEU_EMOJIS = {
+    "😐", "😑", "😶", "🙄"
+}
+
+# Arabic and english punctuations
+punctuations = '''`÷×؛<>_()*&^%][ـ،/:"؟.,'{}~¦+|!”…“–ـ'''
 
 def main():
     # --------------------------
@@ -164,45 +178,46 @@ def main():
     features_val_handcrafted = extract_handEngineered_features(df.loc[texts_val.index])
     features_test_handcrafted = extract_handEngineered_features(df.loc[texts_test.index])
 
-    # --------------------------
-    # SCALE HANDCRAFTED FEATURES (FIX)
-    # --------------------------
     scaler = StandardScaler()
-    handcrafted_train_scaled = scaler.fit_transform(features_train_handcrafted)
-    handcrafted_val_scaled = scaler.transform(features_val_handcrafted)
-    handcrafted_test_scaled = scaler.transform(features_test_handcrafted)
+    features_train_handcrafted = scaler.fit_transform(features_train_handcrafted)
+    features_test_handcrafted = scaler.transform(features_test_handcrafted)
 
     # --------------------------
     # 6. OPTIONAL: Word embeddings
     # --------------------------
-    use_embeddings = False  # set True for embeddings (slower)
-    if use_embeddings:
-        features_train_embeddings, embedding_model = train_word_embeddings(df.loc[texts_train.index], method="fasttext")
-        features_val_embeddings = compute_embedding_vectors(df.loc[texts_val.index], embedding_model, features_train_embeddings.shape[1])
-        features_test_embeddings = compute_embedding_vectors(df.loc[texts_test.index], embedding_model, features_train_embeddings.shape[1])
 
-        # Combine all features: TF-IDF + handcrafted + embeddings
-        features_train = combine_all_features(features_train_tfidf, handcrafted_train_scaled, features_train_embeddings)
-        features_val = combine_all_features(features_val_tfidf, handcrafted_val_scaled, features_val_embeddings)
-        features_test = combine_all_features(features_test_tfidf, handcrafted_test_scaled, features_test_embeddings)
-    else:
+    features_train_embeddings, embedding_model = train_word_embeddings(df.loc[texts_train.index], method="fasttext")
+    features_val_embeddings = compute_embedding_vectors(df.loc[texts_val.index], embedding_model, features_train_embeddings.shape[1])
+    features_test_embeddings = compute_embedding_vectors(df.loc[texts_test.index], embedding_model, features_train_embeddings.shape[1])
 
-        # Combine features for DT / RF / MLP
-        features_train = hstack([features_train_tfidf, handcrafted_train_scaled])
-        features_val = hstack([features_val_tfidf, handcrafted_val_scaled])
-        features_test = hstack([features_test_tfidf, handcrafted_test_scaled])
+    # --------------------------
+    # MLP-specific features (NO TF-IDF)
+    # --------------------------
+    # Combine embeddings + handcrafted features
+    X_train_mlp = np.hstack([features_train_handcrafted, features_train_embeddings])
+    X_val_mlp = np.hstack([features_val_handcrafted, features_val_embeddings])
+    X_test_mlp = np.hstack([features_test_handcrafted, features_test_embeddings])
+
+
+
+
+    # Combine features for DT / RF / MLP
+    features_train = hstack([features_train_tfidf, features_train_handcrafted])
+    features_val = hstack([features_val_tfidf, features_val_handcrafted])
+    features_test = hstack([features_test_tfidf, features_test_handcrafted])
+
+
 
     print("Training features shape:", features_train.shape)
     print("Validation features shape:", features_val.shape)
     print("Test features shape:", features_test.shape)
 
     decision_tree_model, random_forest_model, nb_model, mlp_model = train_and_evaluate_models(
-            features_train,
-            features_train_tfidf,
-            labels_train,
-            features_val,
-            labels_val
-        )
+        features_train,
+        features_train_tfidf,
+        labels_train,
+        X_train_mlp
+    )
 
     evaluate_on_test_set(
             decision_tree_model,
@@ -211,7 +226,7 @@ def main():
             mlp_model,
             features_test,
             features_test_tfidf,
-            labels_test
+            labels_test,X_test_mlp
         )
 
 
@@ -269,11 +284,12 @@ def convert_to_csv_file():
                     data.append([text, label])  # Add them to our data list
                 else:
                     # skip malformed lines safely
-                    print("Skipped:", line)
+                    print("Skipped malformed line:", line)
 
         # Convert the list of lists into a pandas DataFrame with columns "text" and "label"
         df = pd.DataFrame(data, columns=["text", "label"])
 
+        df["label"] = df["label"].replace({"NEUTRAL": "OBJ"})
         # Save the structured DataFrame to a CSV file
         # utf-8-sig ensures Arabic characters are properly saved and can be opened in Excel
         df.to_csv(f"{file_name}.csv", index=False, encoding="utf-8-sig")
@@ -287,7 +303,6 @@ def convert_to_csv_file():
 
 
 def data_analysis(df):
-
     print(df.shape)
     # Print the number of samples per sentiment label (class distribution)
     print(df["label"].value_counts())
@@ -305,21 +320,15 @@ def data_analysis(df):
 def clean_text(text):
     # Perform lowercase, remove URLs, HTML, numbers, punctuation, and extra spaces.
     text = str(text)
-    # make lowercase
-    text = normalize_arabic(text)
     # Remove URLs
     text = re.sub(r"http\S+|www\S+|https\S+", " ", text)
     # Remove HTML tags
     text = re.sub(r"<.*?>", " ", text)
     # Remove numbers
     text = re.sub(r"\d+", " ", text)
-    # Remove punctuation and special characters (keep Arabic letters)
-    text = re.sub(r"[^\u0600-\u06FF\s]", " ", text)
-    # Remove extra spaces
-    text = re.sub(r"\s+", " ", text).strip()
-
-    # Remove repeating chars while safely keeping two to emphasize emotion
-    text = re.sub(r'(.)\1{2,}', r'\1\1', text)
+    text = re.sub(r"[^\w\s#]", '', text)  # remove other punctuation except hashtags
+    # Remove punctuation and special characters (keep Arabic letters) except hashtags
+    text = re.sub(r"[^\u0600-\u06FF\s#]", " ", text)
     return text
 
 
@@ -333,7 +342,7 @@ def normalize_arabic(text):
 
 
 
-
+# Filters out common words that carry little sentiment meaning
 def remove_stopwords(text):
     # Remove common Arabic stopwords.
     words = text.split()                # Split sentence into a list of words
@@ -342,7 +351,7 @@ def remove_stopwords(text):
 
 
 
-
+# Converts words to their root form to reduce lexical variation
 def stem_text(text):
     words = text.split()
     stemmed_words = [stemmer.stem(word) for word in words]
@@ -350,39 +359,69 @@ def stem_text(text):
 
 
 
+
+# Collapses repeated characters
 def remove_elongation(text):
     return re.sub(r'(.)\1+', r'\1', text)
 
+
+
+
+# Converts emojis into sentiment tokens (EMO_POS, EMO_NEG, EMO_NEU)
 def replace_emojis(text):
-    for emoji, token in emoji_dict.items():
-        text = text.replace(emoji, token)
-    return text
+    result = []
+    for ch in text:
+        if ch in POS_EMOJIS:
+            result.append(EMO_POS)
+        elif ch in NEG_EMOJIS:
+            result.append(EMO_NEG)
+        elif ch in NEU_EMOJIS:
+            result.append(EMO_NEU)
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
 
 
 def handle_negation(text):
     tokens = text.split()
     result = []
     i = 0
+
     while i < len(tokens):
-        if tokens[i] in negations and i + 1 < len(tokens):
-            result.append("NOT_" + tokens[i + 1])
-            i += 2
+        if tokens[i] in negations:
+            result.append(tokens[i])  # keep negation
+            j = i + 1
+            while j < min(i + 3, len(tokens)):
+                result.append("NOT_" + tokens[j])
+                j += 1
+            i = j
         else:
             result.append(tokens[i])
             i += 1
+
     return " ".join(result)
 
 
 
 
 def preprocess_text(text):
-    # Apply basic cleaning
-    text = clean_text(text)
+    # Normalize
+    text = normalize_arabic(text)
+    # Remove elongation
     text = remove_elongation(text)
+    # Apply basic cleaning (remove URLs, HTML, numbers, punctuation)
+    text = clean_text(text)
+    # Keep hashtags as separate words
+    text = re.sub(r"#(\w+)", r"\1", text)
+    # Replace emojis with sentiment tokens
     text = replace_emojis(text)
+    # Handle negation across multiple words (2 words after negation)
     text = handle_negation(text)
     # Stopword removal
     text = remove_stopwords(text)
+    # Stemming
     text = stem_text(text)
 
     return text
@@ -619,13 +658,22 @@ def extract_handEngineered_features(df):
 
 # Combine all features (TF-IDF + embeddings + handcrafted)
 from scipy.sparse import hstack, csr_matrix
+
+
 def combine_all_features(tfidf_features, handcrafted_features, embedding_features):
     """
     Combine sparse TF-IDF, handcrafted features, and dense embeddings.
     Embeddings are converted to sparse to hstack with TF-IDF.
     """
     embedding_sparse = csr_matrix(embedding_features)
-    return hstack([tfidf_features, handcrafted_features.values, embedding_sparse])
+
+    # Check if handcrafted_features is a DataFrame or NumPy array
+    if hasattr(handcrafted_features, "values"):
+        handcrafted_matrix = handcrafted_features.values
+    else:
+        handcrafted_matrix = handcrafted_features  # already a NumPy array
+
+    return hstack([tfidf_features, handcrafted_matrix, embedding_sparse])
 
 
 
@@ -651,8 +699,11 @@ def split_dataset(features, labels):
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.neural_network import MLPClassifier
 
-def train_and_evaluate_models(features_training, features_training_tfidf, labels_training,
-                              features_validation, labels_validation):
+def train_and_evaluate_models(
+    features_training,
+    features_training_tfidf,
+    labels_training, X_train_mlp
+):
     # --------------------------
     # 1. Decision Tree
     # --------------------------
@@ -723,7 +774,7 @@ def train_and_evaluate_models(features_training, features_training_tfidf, labels
         random_state=42
     )
 
-    mlp.fit(features_training, labels_training)
+    mlp.fit(X_train_mlp, labels_training)
     print("\n=== MLP Neural Network Trained ===")
 
     # --------------------------
@@ -744,7 +795,7 @@ import seaborn as sns
 # EVALUATION
 # --------------------------------------------------
 def evaluate_on_test_set(decision_tree_model, random_forest_model, nb_model, mlp_model,
-                         features_testing, features_testing_tfidf, labels_testing):
+                         features_testing, features_testing_tfidf, labels_testing,X_test_mlp):
     """
     Evaluates the trained models on the test set.
     Prints accuracy, precision, recall, F1-score and displays confusion matrices.
@@ -754,7 +805,7 @@ def evaluate_on_test_set(decision_tree_model, random_forest_model, nb_model, mlp
         "Decision Tree": (decision_tree_model, features_testing),
         "Random Forest": (random_forest_model, features_testing),
         "Naïve Bayes": (nb_model, features_testing_tfidf),  # TF-IDF ONLY
-        "MLP Neural Network": (mlp_model, features_testing)
+        "MLP Neural Network": (mlp_model, X_test_mlp)
     }
 
     label_order = ["POS", "NEG", "OBJ", "NEUTRAL"]
