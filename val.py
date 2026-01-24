@@ -246,7 +246,7 @@ def main():
     scaler = StandardScaler()
     features_train_handcrafted = scaler.fit_transform(features_train_handcrafted)
     features_test_handcrafted = scaler.transform(features_test_handcrafted)
-
+    features_val_handcrafted = scaler.transform(features_val_handcrafted)
     # --------------------------
     # 6. OPTIONAL: Word embeddings
     # --------------------------
@@ -936,7 +936,7 @@ def train_and_evaluate_models(
     final_mlp = MLPClassifier(
         hidden_layer_sizes=best_mlp_params[0],
         learning_rate_init=best_mlp_params[1],
-        max_iter=150,
+        max_iter=500,
         random_state=42
     )
     final_mlp.fit(X_mlp_full, y_mlp_full)
