@@ -573,11 +573,10 @@ def tweet_length_feature(text):
 #       - Question marks : doubt, disbelief, sarcasm (context-dependent)
 #       - Multiple punctuation : emotional intensity or exaggeration
 import string
-ARABIC_PUNCTUATION = "؟،؛ـ"
 def punctuation_count(text):
     count = 0
     for char in text:
-        if char in string.punctuation or char in ARABIC_PUNCTUATION:
+        if char in string.punctuation or char in punctuations:
             count += 1
     return count
 
