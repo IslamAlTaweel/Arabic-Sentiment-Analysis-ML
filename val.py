@@ -152,9 +152,9 @@ nb_params = {
 }
 
 def main():
-    # --------------------------
+    # ==================================================
     # 1. Load dataset
-    # --------------------------
+    # ==================================================
     df = convert_to_csv_file()
     if df is None:
         return
@@ -165,123 +165,127 @@ def main():
     print(df[["text", "label"]].head())
     data_analysis(df)
 
-    # --------------------------
+    # ==================================================
     # 2. Text preprocessing
-    # --------------------------
+    # ==================================================
     df["cleaned_text"] = df["text"].apply(preprocess_text)
 
     print("\n=== AFTER CLEANING ===")
     print(df[["cleaned_text", "label"]].head())
     data_analysis(df)
 
-    # Save preprocessed data
     df.to_csv(f"{file_name}_preprocessed.csv", index=False, encoding="utf-8-sig")
     print(f"\nPreprocessed data saved to '{file_name}_preprocessed.csv'")
 
-    # --------------------------
-    # 3. Split TEXT and LABELS
-    # --------------------------
+    # ==================================================
+    # 3. Train / Val / Test split
+    # ==================================================
     texts = df["cleaned_text"]
     labels = df["label"]
 
-    texts_train, texts_val, texts_test, labels_train, labels_val, labels_test = split_dataset(texts, labels)
+    texts_train, texts_val, texts_test, labels_train, labels_val, labels_test = \
+        split_dataset(texts, labels)
 
+    # ==================================================
+    # 4. Class weights (for imbalance handling)
+    # ==================================================
     from sklearn.utils.class_weight import compute_class_weight
     import numpy as np
 
     classes = np.unique(labels_train)
-
-    class_weights_array = compute_class_weight(
+    class_weights = compute_class_weight(
         class_weight="balanced",
         classes=classes,
         y=labels_train
     )
-
-    class_weight_dict = dict(zip(classes, class_weights_array))
+    class_weight_dict = dict(zip(classes, class_weights))
     print("Class weights:", class_weight_dict)
 
-    # --------------------------
-    # 4. TF-IDF features (fit only on training)
-    # --------------------------
+    # ==================================================
+    # 5. TF-IDF features (fit on TRAIN only)
+    # ==================================================
     tfidf_vectorizer = TfidfVectorizer(
-        ngram_range=(1, 1),
-        # Use ONLY unigrams.
-        # - Arabic sentiment words often carry polarity by themselves
-        # - Bigrams dramatically increase sparsity
-        # - Unigrams generalize better on small/medium datasets
-        # - Helps Naive Bayes the most
-
+        ngram_range=(1, 2),
         max_features=3000,
-        # Keep only the 3000 most informative terms (highest TF-IDF scores).
-        # - Reduces dimensionality → less overfitting
-        # - Removes rare/noisy tokens (typos, names, elongated words)
-        # - Forces the model to focus on high-frequency, sentiment-bearing words
-        # - Improves generalization on the test set
-
         min_df=5,
-        # Ignore words that appear in fewer than 5 documents.
-        # - Rare words have unreliable statistics
-        # - They add noise, not signal
-        # - Especially important for Naive Bayes (probability estimation)
-        # - Prevents memorization of training-only artifacts
-
         max_df=0.85
-        # Ignore words that appear in more than 85% of documents.
-        # - Removes near-stopwords that survived preprocessing
-        # - Such words have low information gain
-        # - Improves class separability
     )
 
-    features_train_tfidf = tfidf_vectorizer.fit_transform(texts_train)
-    features_val_tfidf = tfidf_vectorizer.transform(texts_val)
-    features_test_tfidf = tfidf_vectorizer.transform(texts_test)
+    X_train_tfidf = tfidf_vectorizer.fit_transform(texts_train)
+    X_val_tfidf   = tfidf_vectorizer.transform(texts_val)
+    X_test_tfidf  = tfidf_vectorizer.transform(texts_test)
 
-    # --------------------------
-    # 5. Hand-engineered features
-    # --------------------------
-    features_train_handcrafted = extract_handEngineered_features(df.loc[texts_train.index])
-    features_val_handcrafted = extract_handEngineered_features(df.loc[texts_val.index])
-    features_test_handcrafted = extract_handEngineered_features(df.loc[texts_test.index])
+    # Dense TF-IDF for MLP
+    X_train_tfidf_mlp = X_train_tfidf.toarray()
+    X_val_tfidf_mlp   = X_val_tfidf.toarray()
+    X_test_tfidf_mlp  = X_test_tfidf.toarray()
 
-    scaler = StandardScaler()
-    features_train_handcrafted = scaler.fit_transform(features_train_handcrafted)
-    features_test_handcrafted = scaler.transform(features_test_handcrafted)
-    features_val_handcrafted = scaler.transform(features_val_handcrafted)
-    # --------------------------
-    # 6. OPTIONAL: Word embeddings
-    # --------------------------
+    # ==================================================
+    # 6. Hand-engineered features
+    # ==================================================
+    from sklearn.preprocessing import StandardScaler
 
-    features_train_embeddings, embedding_model = train_word_embeddings(df.loc[texts_train.index], method="fasttext")
-    features_val_embeddings = compute_embedding_vectors(df.loc[texts_val.index], embedding_model, features_train_embeddings.shape[1])
-    features_test_embeddings = compute_embedding_vectors(df.loc[texts_test.index], embedding_model, features_train_embeddings.shape[1])
+    X_train_hand = extract_handEngineered_features(df.loc[texts_train.index])
+    X_val_hand   = extract_handEngineered_features(df.loc[texts_val.index])
+    X_test_hand  = extract_handEngineered_features(df.loc[texts_test.index])
 
-    # --------------------------
-    # MLP-specific features (NO TF-IDF)
-    # --------------------------
-    # Combine embeddings + handcrafted features
-    X_train_mlp = np.hstack([features_train_handcrafted, features_train_embeddings])
-    X_val_mlp = np.hstack([features_val_handcrafted, features_val_embeddings])
-    X_test_mlp = np.hstack([features_test_handcrafted, features_test_embeddings])
+    scaler_hand = StandardScaler()
+    X_train_hand = scaler_hand.fit_transform(X_train_hand)
+    X_val_hand   = scaler_hand.transform(X_val_hand)
+    X_test_hand  = scaler_hand.transform(X_test_hand)
 
+    # ==================================================
+    # 7. Word embeddings (FastText trained on TRAIN only)
+    # ==================================================
+    embedding_model = train_embedding_model(
+        df.loc[texts_train.index],
+        method="fasttext"
+    )
 
+    X_train_emb = compute_embedding_vectors(
+        df.loc[texts_train.index], embedding_model, vector_size=100
+    )
+    X_val_emb = compute_embedding_vectors(
+        df.loc[texts_val.index], embedding_model, vector_size=100
+    )
+    X_test_emb = compute_embedding_vectors(
+        df.loc[texts_test.index], embedding_model, vector_size=100
+    )
 
+    # ==================================================
+    # 8. MLP feature matrix (TF-IDF + handcrafted + embeddings)
+    # ==================================================
+    X_train_mlp = np.hstack([X_train_tfidf_mlp, X_train_hand, X_train_emb])
+    X_val_mlp   = np.hstack([X_val_tfidf_mlp,   X_val_hand,   X_val_emb])
+    X_test_mlp  = np.hstack([X_test_tfidf_mlp,  X_test_hand,  X_test_emb])
 
-    # Combine features for DT / RF / MLP
-    features_train = hstack([features_train_tfidf, features_train_handcrafted])
-    features_val = hstack([features_val_tfidf, features_val_handcrafted])
-    features_test = hstack([features_test_tfidf, features_test_handcrafted])
+    # Scale ALL MLP inputs
+    scaler_mlp = StandardScaler()
+    X_train_mlp = scaler_mlp.fit_transform(X_train_mlp)
+    X_val_mlp   = scaler_mlp.transform(X_val_mlp)
+    X_test_mlp  = scaler_mlp.transform(X_test_mlp)
 
+    # ==================================================
+    # 9. Classical model feature matrices (TF-IDF + handcrafted)
+    # ==================================================
+    from scipy.sparse import hstack
 
+    X_train = hstack([X_train_tfidf, X_train_hand])
+    X_val   = hstack([X_val_tfidf,   X_val_hand])
+    X_test  = hstack([X_test_tfidf,  X_test_hand])
 
-    print("Training features shape:", features_train.shape)
-    print("Validation features shape:", features_val.shape)
-    print("Test features shape:", features_test.shape)
+    print("Training features shape:", X_train.shape)
+    print("Validation features shape:", X_val.shape)
+    print("Test features shape:", X_test.shape)
 
-    decision_tree_model, random_forest_model, nb_model, mlp_model = train_and_evaluate_models(
-        features_train,
-        features_val,
-        features_train_tfidf,
-        features_val_tfidf,
+    # ==================================================
+    # 10. Train models
+    # ==================================================
+    dt_model, rf_model, nb_model, mlp_model = train_and_evaluate_models(
+        X_train,
+        X_val,
+        X_train_tfidf,
+        X_val_tfidf,
         labels_train,
         labels_val,
         X_train_mlp,
@@ -289,48 +293,52 @@ def main():
         class_weight_dict
     )
 
-
-
+    # ==================================================
+    # 11. Final evaluation on test set
+    # ==================================================
     evaluate_on_test_set(
-            decision_tree_model,
-            random_forest_model,
-            nb_model,
-            mlp_model,
-            features_test,
-            features_test_tfidf,
-            labels_test,X_test_mlp
-        )
+        dt_model,
+        rf_model,
+        nb_model,
+        mlp_model,
+        X_test,
+        X_test_tfidf,
+        labels_test,
+        X_test_mlp
+    )
 
 
 
 
+def train_embedding_model(df, method="fasttext", vector_size=100,
+                          window=5, min_count=2, epochs=5):
+    sentences = [text.split() for text in df["cleaned_text"]]
+
+    if method == "word2vec":
+        model = Word2Vec(sentences, vector_size=vector_size,
+                         window=window, min_count=min_count,
+                         workers=4, epochs=epochs)
+    else:
+        model = FastText(sentences, vector_size=vector_size,
+                         window=window, min_count=min_count,
+                         workers=4, epochs=epochs)
+    return model
 
 
 
-def compute_embedding_vectors(df_subset, model, vector_size):
-    """
-    Convert a DataFrame of cleaned tweets into embedding vectors using a trained Word2Vec/FastText model.
+def compute_embedding_vectors(df, model, vector_size):
+    embeddings = []
 
-    Args:
-        df_subset: DataFrame with a 'cleaned_text' column
-        model: trained Word2Vec or FastText model
-        vector_size: size of embedding vectors
-
-    Returns:
-        embeddings_matrix: numpy array of shape (num_samples, vector_size)
-    """
-    embeddings_matrix = []
-
-    for text in df_subset["cleaned_text"]:
+    for text in df["cleaned_text"]:
         words = text.split()
-        vectors = [model.wv[word] for word in words if word in model.wv]
-        if vectors:
-            avg_vector = np.mean(vectors, axis=0)
-        else:
-            avg_vector = np.zeros(vector_size)
-        embeddings_matrix.append(avg_vector)
+        vectors = [model.wv[w] for w in words if w in model.wv]
 
-    return np.array(embeddings_matrix)
+        if vectors:
+            embeddings.append(np.mean(vectors, axis=0))
+        else:
+            embeddings.append(np.zeros(vector_size))
+
+    return np.array(embeddings)
 
 
 
@@ -506,86 +514,8 @@ def preprocess_text(text):
 
 
 
-# Feature Extraction:
-#   1. Automated Text Representations
-#       a. -TF-IDF: Counts how often words appear.
-#           It gives more importance to unique, meaningful words and less to common ones.
-def extract_features(df):
-    """
-    Converts cleaned Arabic text into numerical features using TF-IDF
-    and separates the sentiment labels.
-
-    Returns:
-    - text_features: numerical representation of text (for ML models)
-    - sentiment_labels: target classes (POS, NEG, OBJ, NEUTRAL)
-    - tfidf_vectorizer: the trained TF-IDF object (needed later for testing)
-    """
-
-    # Create a TF-IDF vectorizer
-    # ngram_range=(1,2) --> uses single words (unigrams) and word pairs (bigrams)
-    # max_features=5000 --> limits vocabulary size to most important 5000 features
-    tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 2),max_features=5000)
-
-    # Convert cleaned text into numerical feature vectors
-    # Each tweet becomes a row of numbers
-    text_features = tfidf_vectorizer.fit_transform(df["cleaned_text"])
-
-    # Extract the sentiment labels (targets)
-    sentiment_labels = df["label"]
-
-    return text_features, sentiment_labels, tfidf_vectorizer
-
-
-
-
 
 from gensim.models import Word2Vec, FastText
-import numpy as np
-
-def train_word_embeddings(df, method="word2vec", vector_size=100, window=5, min_count=2, epochs=5):
-    """
-    Train Word2Vec or FastText embeddings on cleaned Arabic tweets.
-
-    Args:
-        df: DataFrame with 'cleaned_text' column
-        method: "word2vec" or "fasttext"
-        vector_size: embedding dimension
-        window: context window size
-        min_count: ignore words with frequency < min_count
-        epochs: number of training epochs
-
-    Returns:
-        embeddings_matrix: numpy array of shape (num_samples, vector_size)
-        model: trained Word2Vec or FastText model
-    """
-    # Tokenize text into lists of words
-    sentences = [text.split() for text in df["cleaned_text"]]
-
-    # Train the embedding model
-    if method.lower() == "word2vec":
-        model = Word2Vec(sentences, vector_size=vector_size, window=window,
-                         min_count=min_count, workers=4, epochs=epochs)
-    elif method.lower() == "fasttext":
-        model = FastText(sentences, vector_size=vector_size, window=window,
-                         min_count=min_count, workers=4, epochs=epochs)
-    else:
-        raise ValueError("method must be 'word2vec' or 'fasttext'")
-
-    # Compute tweet embeddings by averaging word vectors
-    embeddings_matrix = []
-    for sentence in sentences:
-        vectors = []
-        for word in sentence:
-            if word in model.wv:
-                vectors.append(model.wv[word])
-        if vectors:
-            avg_vector = np.mean(vectors, axis=0)
-        else:
-            avg_vector = np.zeros(vector_size)
-        embeddings_matrix.append(avg_vector)
-
-    embeddings_matrix = np.array(embeddings_matrix)
-    return embeddings_matrix, model
 
 
 
@@ -694,6 +624,7 @@ def dialect_feature(text):
 
 # Combine handcrafted features
 def extract_handEngineered_features(df):
+    df = df.copy()
     df["tweet_length"] = df["cleaned_text"].apply(tweet_length_feature)
 
     # Use RAW text for social signals
@@ -708,7 +639,7 @@ def extract_handEngineered_features(df):
     # Fix: use 'cleaned_text' instead of 'clean_text'
     df["neg_count"] = df["cleaned_text"].apply(negation_count)
     df["dialect"] = df["cleaned_text"].apply(dialect_feature)
-    emoji_df = df["text"].apply(emoji_features)
+    emoji_df = df["cleaned_text"].apply(emoji_features)
     df = pd.concat([df, emoji_df], axis=1)
 
     return df[[
@@ -734,23 +665,6 @@ def extract_handEngineered_features(df):
 from scipy.sparse import hstack, csr_matrix
 
 
-def combine_all_features(tfidf_features, handcrafted_features, embedding_features):
-    """
-    Combine sparse TF-IDF, handcrafted features, and dense embeddings.
-    Embeddings are converted to sparse to hstack with TF-IDF.
-    """
-    embedding_sparse = csr_matrix(embedding_features)
-
-    # Check if handcrafted_features is a DataFrame or NumPy array
-    if hasattr(handcrafted_features, "values"):
-        handcrafted_matrix = handcrafted_features.values
-    else:
-        handcrafted_matrix = handcrafted_features  # already a NumPy array
-
-    return hstack([tfidf_features, handcrafted_matrix, embedding_sparse])
-
-
-
 
 # 60% of the dataset reserved for training
 # 20% of the dataset reserved for validation
@@ -770,18 +684,16 @@ def split_dataset(features, labels):
 
 
 
-from sklearn.naive_bayes import MultinomialNB
-from sklearn.neural_network import MLPClassifier
+
 from scipy.sparse import vstack
-from sklearn.metrics import f1_score
+
 import numpy as np
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
-
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.utils import resample
+
 
 def train_and_evaluate_models(
     features_training,
@@ -795,7 +707,7 @@ def train_and_evaluate_models(
     class_weight_dict
 ):
     # ==================================================
-    # 0. Prepare MLP inputs: dense and numeric
+    # 0. Prepare MLP inputs (dense + numeric)
     # ==================================================
     if hasattr(X_train_mlp, "toarray"):
         X_train_mlp = X_train_mlp.toarray()
@@ -805,25 +717,9 @@ def train_and_evaluate_models(
     X_train_mlp = X_train_mlp.astype(np.float32)
     X_val_mlp   = X_val_mlp.astype(np.float32)
 
-    # Upsample minority classes for MLP
-    y_train_mlp = np.array(labels_training)
-    X_train_mlp_df = pd.DataFrame(X_train_mlp)
-    X_train_mlp_df['label'] = y_train_mlp
 
-    # Separate classes
-    df_POS = X_train_mlp_df[X_train_mlp_df['label']=='POS']
-    df_NEG = X_train_mlp_df[X_train_mlp_df['label']=='NEG']
-    df_OBJ = X_train_mlp_df[X_train_mlp_df['label']=='OBJ']
-
-    max_size = max(len(df_POS), len(df_NEG), len(df_OBJ))
-
-    df_POS_up = resample(df_POS, replace=True, n_samples=max_size, random_state=42)
-    df_NEG_up = resample(df_NEG, replace=True, n_samples=max_size, random_state=42)
-    df_OBJ_up = resample(df_OBJ, replace=True, n_samples=max_size, random_state=42)
-
-    df_upsampled = pd.concat([df_POS_up, df_NEG_up, df_OBJ_up])
-    X_train_mlp = df_upsampled.drop(columns=['label']).values
-    y_train_mlp = df_upsampled['label'].values
+    assert X_train_mlp.shape[0] == len(labels_training)
+    assert X_val_mlp.shape[0] == len(labels_validation)
 
     # ==================================================
     # 1. DECISION TREE — validation-based tuning
@@ -842,6 +738,7 @@ def train_and_evaluate_models(
             dt.fit(features_training, labels_training)
             preds = dt.predict(features_validation)
             f1 = f1_score(labels_validation, preds, average="macro")
+
             if f1 > best_f1:
                 best_f1 = f1
                 best_dt_params = (max_depth, min_samples_split)
@@ -849,8 +746,8 @@ def train_and_evaluate_models(
     print("=== Decision Tree Best Params (Validation) ===")
     print(f"max_depth={best_dt_params[0]}, min_samples_split={best_dt_params[1]}")
 
-    X_dt_full = vstack([features_training, features_validation])
-    y_dt_full = np.concatenate([labels_training, labels_validation])
+    X_dt_full = vstack([features_training])
+    y_dt_full = np.concatenate([labels_training])
 
     final_dt = DecisionTreeClassifier(
         max_depth=best_dt_params[0],
@@ -880,6 +777,7 @@ def train_and_evaluate_models(
                 rf.fit(features_training, labels_training)
                 preds = rf.predict(features_validation)
                 f1 = f1_score(labels_validation, preds, average="macro")
+
                 if f1 > best_f1:
                     best_f1 = f1
                     best_rf_params = (n_estimators, max_depth, min_samples_split)
@@ -891,8 +789,8 @@ def train_and_evaluate_models(
         f"min_samples_split={best_rf_params[2]}"
     )
 
-    X_rf_full = vstack([features_training, features_validation])
-    y_rf_full = np.concatenate([labels_training, labels_validation])
+    X_rf_full = vstack([features_training])
+    y_rf_full = np.concatenate([labels_training])
 
     final_rf = RandomForestClassifier(
         n_estimators=best_rf_params[0],
@@ -911,10 +809,11 @@ def train_and_evaluate_models(
     best_alpha = None
 
     for alpha in [0.1, 0.3, 0.5, 1.0]:
-        nb = MultinomialNB(alpha=alpha)
+        nb = MultinomialNB(alpha=alpha, fit_prior=False)
         nb.fit(features_training_tfidf, labels_training)
         preds = nb.predict(features_validation_tfidf)
         f1 = f1_score(labels_validation, preds, average="macro")
+
         if f1 > best_f1:
             best_f1 = f1
             best_alpha = alpha
@@ -923,31 +822,47 @@ def train_and_evaluate_models(
     print(f"alpha={best_alpha}")
 
     X_nb_full = np.vstack([
-        features_training_tfidf.toarray(),
-        features_validation_tfidf.toarray()
+        features_training_tfidf.toarray()
     ])
-    y_nb_full = np.concatenate([labels_training, labels_validation])
+    y_nb_full = np.concatenate([labels_training])
 
-    final_nb = MultinomialNB(alpha=best_alpha)
+    final_nb = MultinomialNB(alpha=best_alpha,fit_prior=False)
     final_nb.fit(X_nb_full, y_nb_full)
 
     # ==================================================
-    # 4. MLP — validation-based tuning with class balancing
+    # 4. MLP — validation-based tuning (CLASS WEIGHTS ONLY)
     # ==================================================
     best_f1 = 0
     best_mlp_params = None
+
+    classes = np.unique(labels_training)
+    weights = compute_class_weight(
+        class_weight="balanced",
+        classes=classes,
+        y=labels_training
+    )
+    class_weight_mlp = dict(zip(classes, weights))
+
+    sample_weight = np.array([class_weight_mlp[y] for y in labels_training])
 
     for hidden in [(128,), (128, 64)]:
         for lr in [0.001, 0.0005]:
             mlp = MLPClassifier(
                 hidden_layer_sizes=hidden,
                 learning_rate_init=lr,
-                max_iter=150,
+                max_iter=500,
                 random_state=42
             )
-            mlp.fit(X_train_mlp, y_train_mlp)
+
+            mlp.fit(
+                X_train_mlp,
+                labels_training,
+                sample_weight=sample_weight
+            )
+
             preds = mlp.predict(X_val_mlp)
             f1 = f1_score(labels_validation, preds, average="macro")
+
             if f1 > best_f1:
                 best_f1 = f1
                 best_mlp_params = (hidden, lr)
@@ -955,8 +870,19 @@ def train_and_evaluate_models(
     print("\n=== MLP Best Params (Validation) ===")
     print(f"hidden_layers={best_mlp_params[0]}, learning_rate={best_mlp_params[1]}")
 
-    X_mlp_full = np.vstack([X_train_mlp, X_val_mlp])
-    y_mlp_full = np.concatenate([y_train_mlp, labels_validation])
+  
+    X_mlp_full = np.vstack([X_train_mlp])
+    y_mlp_full = np.concatenate([labels_training])
+
+    classes_full = np.unique(y_mlp_full)
+    weights_full = compute_class_weight(
+        class_weight="balanced",
+        classes=classes_full,
+        y=y_mlp_full
+    )
+    sample_weight_full = np.array(
+        [dict(zip(classes_full, weights_full))[y] for y in y_mlp_full]
+    )
 
     final_mlp = MLPClassifier(
         hidden_layer_sizes=best_mlp_params[0],
@@ -964,7 +890,8 @@ def train_and_evaluate_models(
         max_iter=500,
         random_state=42
     )
-    final_mlp.fit(X_mlp_full, y_mlp_full)
+
+    final_mlp.fit(X_mlp_full, y_mlp_full, sample_weight=sample_weight_full)
 
     return final_dt, final_rf, final_nb, final_mlp
 
@@ -992,7 +919,7 @@ def evaluate_on_test_set(decision_tree_model, random_forest_model, nb_model, mlp
         "MLP Neural Network": (mlp_model, X_test_mlp)
     }
 
-    label_order = ["POS", "NEG", "OBJ", "NEUTRAL"]
+    label_order = ["POS", "NEG", "OBJ"]
 
     for name, (model, features) in models.items():
         print(f"\n=== {name} Evaluation on Test Set ===")
@@ -1030,6 +957,7 @@ def evaluate_on_test_set(decision_tree_model, random_forest_model, nb_model, mlp
         plt.ylabel("True Label")
         plt.tight_layout()
         plt.show()
+        plt.close()  # Free resources
 
 if __name__ == "__main__":
     main()
