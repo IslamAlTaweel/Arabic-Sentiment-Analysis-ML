@@ -911,7 +911,7 @@ def train_and_evaluate_models(
     ])
     y_nb_full = np.concatenate([labels_training, labels_validation])
 
-    final_nb = MultinomialNB(alpha=best_alpha)
+    final_nb = MultinomialNB(alpha=best_alpha,fit_prior=False)
     final_nb.fit(X_nb_full, y_nb_full)
 
     # ==================================================
