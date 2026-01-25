@@ -746,8 +746,8 @@ def train_and_evaluate_models(
     print("=== Decision Tree Best Params (Validation) ===")
     print(f"max_depth={best_dt_params[0]}, min_samples_split={best_dt_params[1]}")
 
-    X_dt_full = vstack([features_training, features_validation])
-    y_dt_full = np.concatenate([labels_training, labels_validation])
+    X_dt_full = vstack([features_training])
+    y_dt_full = np.concatenate([labels_training])
 
     final_dt = DecisionTreeClassifier(
         max_depth=best_dt_params[0],
@@ -789,8 +789,8 @@ def train_and_evaluate_models(
         f"min_samples_split={best_rf_params[2]}"
     )
 
-    X_rf_full = vstack([features_training, features_validation])
-    y_rf_full = np.concatenate([labels_training, labels_validation])
+    X_rf_full = vstack([features_training])
+    y_rf_full = np.concatenate([labels_training])
 
     final_rf = RandomForestClassifier(
         n_estimators=best_rf_params[0],
@@ -822,10 +822,9 @@ def train_and_evaluate_models(
     print(f"alpha={best_alpha}")
 
     X_nb_full = np.vstack([
-        features_training_tfidf.toarray(),
-        features_validation_tfidf.toarray()
+        features_training_tfidf.toarray()
     ])
-    y_nb_full = np.concatenate([labels_training, labels_validation])
+    y_nb_full = np.concatenate([labels_training])
 
     final_nb = MultinomialNB(alpha=best_alpha,fit_prior=False)
     final_nb.fit(X_nb_full, y_nb_full)
@@ -871,9 +870,9 @@ def train_and_evaluate_models(
     print("\n=== MLP Best Params (Validation) ===")
     print(f"hidden_layers={best_mlp_params[0]}, learning_rate={best_mlp_params[1]}")
 
-    # Retrain on TRAIN + VAL
-    X_mlp_full = np.vstack([X_train_mlp, X_val_mlp])
-    y_mlp_full = np.concatenate([labels_training, labels_validation])
+  
+    X_mlp_full = np.vstack([X_train_mlp])
+    y_mlp_full = np.concatenate([labels_training])
 
     classes_full = np.unique(y_mlp_full)
     weights_full = compute_class_weight(
