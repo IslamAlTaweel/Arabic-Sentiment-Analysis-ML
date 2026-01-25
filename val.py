@@ -205,31 +205,9 @@ def main():
     # --------------------------
     tfidf_vectorizer = TfidfVectorizer(
         ngram_range=(1, 1),
-        # Use ONLY unigrams.
-        # - Arabic sentiment words often carry polarity by themselves
-        # - Bigrams dramatically increase sparsity
-        # - Unigrams generalize better on small/medium datasets
-        # - Helps Naive Bayes the most
-
         max_features=3000,
-        # Keep only the 3000 most informative terms (highest TF-IDF scores).
-        # - Reduces dimensionality → less overfitting
-        # - Removes rare/noisy tokens (typos, names, elongated words)
-        # - Forces the model to focus on high-frequency, sentiment-bearing words
-        # - Improves generalization on the test set
-
         min_df=5,
-        # Ignore words that appear in fewer than 5 documents.
-        # - Rare words have unreliable statistics
-        # - They add noise, not signal
-        # - Especially important for Naive Bayes (probability estimation)
-        # - Prevents memorization of training-only artifacts
-
         max_df=0.85
-        # Ignore words that appear in more than 85% of documents.
-        # - Removes near-stopwords that survived preprocessing
-        # - Such words have low information gain
-        # - Improves class separability
     )
 
     features_train_tfidf = tfidf_vectorizer.fit_transform(texts_train)
@@ -245,16 +223,37 @@ def main():
 
     scaler = StandardScaler()
     features_train_handcrafted = scaler.fit_transform(features_train_handcrafted)
-    features_test_handcrafted = scaler.transform(features_test_handcrafted)
     features_val_handcrafted = scaler.transform(features_val_handcrafted)
+    features_test_handcrafted = scaler.transform(features_test_handcrafted)
+
     # --------------------------
-    # 6. OPTIONAL: Word embeddings
+    # 6. Word embeddings
     # --------------------------
 
-    features_train_embeddings, embedding_model = train_word_embeddings(df.loc[texts_train.index], method="fasttext")
-    features_val_embeddings = compute_embedding_vectors(df.loc[texts_val.index], embedding_model, features_train_embeddings.shape[1])
-    features_test_embeddings = compute_embedding_vectors(df.loc[texts_test.index], embedding_model, features_train_embeddings.shape[1])
+    # Train embedding model ONLY
+    embedding_model = train_embedding_model(
+        df.loc[texts_train.index],
+        method="fasttext"
+    )
 
+    # Compute embeddings per split
+    features_train_embeddings = compute_embedding_vectors(
+        df.loc[texts_train.index],
+        embedding_model,
+        vector_size=100
+    )
+
+    features_val_embeddings = compute_embedding_vectors(
+        df.loc[texts_val.index],
+        embedding_model,
+        vector_size=100
+    )
+
+    features_test_embeddings = compute_embedding_vectors(
+        df.loc[texts_test.index],
+        embedding_model,
+        vector_size=100
+    )
     # --------------------------
     # MLP-specific features (NO TF-IDF)
     # --------------------------
@@ -303,34 +302,35 @@ def main():
 
 
 
+def train_embedding_model(df, method="fasttext", vector_size=100,
+                          window=5, min_count=2, epochs=5):
+    sentences = [text.split() for text in df["cleaned_text"]]
+
+    if method == "word2vec":
+        model = Word2Vec(sentences, vector_size=vector_size,
+                         window=window, min_count=min_count,
+                         workers=4, epochs=epochs)
+    else:
+        model = FastText(sentences, vector_size=vector_size,
+                         window=window, min_count=min_count,
+                         workers=4, epochs=epochs)
+    return model
 
 
 
+def compute_embedding_vectors(df, model, vector_size):
+    embeddings = []
 
-def compute_embedding_vectors(df_subset, model, vector_size):
-    """
-    Convert a DataFrame of cleaned tweets into embedding vectors using a trained Word2Vec/FastText model.
-
-    Args:
-        df_subset: DataFrame with a 'cleaned_text' column
-        model: trained Word2Vec or FastText model
-        vector_size: size of embedding vectors
-
-    Returns:
-        embeddings_matrix: numpy array of shape (num_samples, vector_size)
-    """
-    embeddings_matrix = []
-
-    for text in df_subset["cleaned_text"]:
+    for text in df["cleaned_text"]:
         words = text.split()
-        vectors = [model.wv[word] for word in words if word in model.wv]
-        if vectors:
-            avg_vector = np.mean(vectors, axis=0)
-        else:
-            avg_vector = np.zeros(vector_size)
-        embeddings_matrix.append(avg_vector)
+        vectors = [model.wv[w] for w in words if w in model.wv]
 
-    return np.array(embeddings_matrix)
+        if vectors:
+            embeddings.append(np.mean(vectors, axis=0))
+        else:
+            embeddings.append(np.zeros(vector_size))
+
+    return np.array(embeddings)
 
 
 
@@ -540,8 +540,6 @@ def extract_features(df):
 
 
 from gensim.models import Word2Vec, FastText
-import numpy as np
-
 def train_word_embeddings(df, method="word2vec", vector_size=100, window=5, min_count=2, epochs=5):
     """
     Train Word2Vec or FastText embeddings on cleaned Arabic tweets.
@@ -770,15 +768,16 @@ def split_dataset(features, labels):
 
 
 
-from sklearn.naive_bayes import MultinomialNB
-from sklearn.neural_network import MLPClassifier
+
 from scipy.sparse import vstack
-from sklearn.metrics import f1_score
+
 import numpy as np
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
+from sklearn.utils.class_weight import compute_class_weight
+
 
 def train_and_evaluate_models(
     features_training,
@@ -791,6 +790,21 @@ def train_and_evaluate_models(
     X_val_mlp,
     class_weight_dict
 ):
+    # ==================================================
+    # 0. Prepare MLP inputs (dense + numeric)
+    # ==================================================
+    if hasattr(X_train_mlp, "toarray"):
+        X_train_mlp = X_train_mlp.toarray()
+    if hasattr(X_val_mlp, "toarray"):
+        X_val_mlp = X_val_mlp.toarray()
+
+    X_train_mlp = X_train_mlp.astype(np.float32)
+    X_val_mlp   = X_val_mlp.astype(np.float32)
+
+
+    assert X_train_mlp.shape[0] == len(labels_training)
+    assert X_val_mlp.shape[0] == len(labels_validation)
+
     # ==================================================
     # 1. DECISION TREE — validation-based tuning
     # ==================================================
@@ -805,7 +819,6 @@ def train_and_evaluate_models(
                 random_state=42,
                 class_weight=class_weight_dict
             )
-
             dt.fit(features_training, labels_training)
             preds = dt.predict(features_validation)
             f1 = f1_score(labels_validation, preds, average="macro")
@@ -817,7 +830,6 @@ def train_and_evaluate_models(
     print("=== Decision Tree Best Params (Validation) ===")
     print(f"max_depth={best_dt_params[0]}, min_samples_split={best_dt_params[1]}")
 
-    # Retrain on TRAIN + VALIDATION
     X_dt_full = vstack([features_training, features_validation])
     y_dt_full = np.concatenate([labels_training, labels_validation])
 
@@ -846,7 +858,6 @@ def train_and_evaluate_models(
                     class_weight=class_weight_dict,
                     n_jobs=-1
                 )
-
                 rf.fit(features_training, labels_training)
                 preds = rf.predict(features_validation)
                 f1 = f1_score(labels_validation, preds, average="macro")
@@ -862,7 +873,6 @@ def train_and_evaluate_models(
         f"min_samples_split={best_rf_params[2]}"
     )
 
-    # Retrain on TRAIN + VALIDATION
     X_rf_full = vstack([features_training, features_validation])
     y_rf_full = np.concatenate([labels_training, labels_validation])
 
@@ -905,10 +915,20 @@ def train_and_evaluate_models(
     final_nb.fit(X_nb_full, y_nb_full)
 
     # ==================================================
-    # 4. MLP — validation-based tuning
+    # 4. MLP — validation-based tuning (CLASS WEIGHTS ONLY)
     # ==================================================
     best_f1 = 0
     best_mlp_params = None
+
+    classes = np.unique(labels_training)
+    weights = compute_class_weight(
+        class_weight="balanced",
+        classes=classes,
+        y=labels_training
+    )
+    class_weight_mlp = dict(zip(classes, weights))
+
+    sample_weight = np.array([class_weight_mlp[y] for y in labels_training])
 
     for hidden in [(128,), (128, 64)]:
         for lr in [0.001, 0.0005]:
@@ -919,7 +939,12 @@ def train_and_evaluate_models(
                 random_state=42
             )
 
-            mlp.fit(X_train_mlp, labels_training)
+            mlp.fit(
+                X_train_mlp,
+                labels_training,
+                sample_weight=sample_weight
+            )
+
             preds = mlp.predict(X_val_mlp)
             f1 = f1_score(labels_validation, preds, average="macro")
 
@@ -930,8 +955,19 @@ def train_and_evaluate_models(
     print("\n=== MLP Best Params (Validation) ===")
     print(f"hidden_layers={best_mlp_params[0]}, learning_rate={best_mlp_params[1]}")
 
+    # Retrain on TRAIN + VAL
     X_mlp_full = np.vstack([X_train_mlp, X_val_mlp])
     y_mlp_full = np.concatenate([labels_training, labels_validation])
+
+    classes_full = np.unique(y_mlp_full)
+    weights_full = compute_class_weight(
+        class_weight="balanced",
+        classes=classes_full,
+        y=y_mlp_full
+    )
+    sample_weight_full = np.array(
+        [dict(zip(classes_full, weights_full))[y] for y in y_mlp_full]
+    )
 
     final_mlp = MLPClassifier(
         hidden_layer_sizes=best_mlp_params[0],
@@ -939,9 +975,11 @@ def train_and_evaluate_models(
         max_iter=500,
         random_state=42
     )
-    final_mlp.fit(X_mlp_full, y_mlp_full)
+
+    final_mlp.fit(X_mlp_full, y_mlp_full, sample_weight=sample_weight_full)
 
     return final_dt, final_rf, final_nb, final_mlp
+
 
 
 
